@@ -20,7 +20,7 @@ const { createLogger } = require('../lib/log');
 const { estimateTokens } = require('../lib/tokens');
 const shared = require('../lib/providers/_shared');
 const { normalizeUrl, back, clickablePoint, bestQuadRect } = require('../lib/executors/page');
-const { createScratchpad, filenameStemFromHint } = require('../lib/scratchpad');
+const { createScratchpad, filenameStem } = require('../lib/scratchpad');
 const { buildHandoff } = require('../agent');
 const { buildSystemPrompt } = require('../lib/prompt');
 const { collectRegions, collectPasswordIds, buildSnapshotMaps } = require('../lib/extract');
@@ -241,20 +241,31 @@ async function reduceSuite() {
     assert.notStrictEqual(computeBriefHash(a), computeBriefHash(renamed), 'name change busts hash');
   });
 
-  await test('renders unreadable regions in reading order with an @r ref + crop hint', () => {
+  await test('renders visuals in reading order with a @v ref to screenshot', () => {
     const brief = makeBrief({
       elements: [],
       text: [{ ref: '@t1', role: 'heading', name: 'Sales', bbox: [0, 10, 100, 20] }],
-      regions: [{ ref: '@r1', role: 'canvas', bbox: [0, 100, 640, 480], inViewport: true }],
+      regions: [{ ref: '@v1', role: 'canvas', bbox: [0, 100, 640, 480], inViewport: true }],
     });
     const v = reduce(brief, { includeText: true, includeCoords: true });
     const lines = v.listing.split('\n');
     assert.ok(lines[0].includes('@t1'), 'heading (y=10) sorts above the canvas (y=100)');
-    const region = lines.find(l => l.includes('[@r1]'));
-    assert.ok(region, 'region line present with its @r ref');
+    const region = lines.find(l => l.includes('[@v1]'));
+    assert.ok(region, 'visual line present with its @v ref');
     assert.ok(region.includes('canvas') && region.includes('640×480'), 'role and dimensions shown');
-    assert.ok(region.includes('take_screenshot @r1'), 'points the model at a cropped screenshot of this ref');
+    assert.ok(region.includes('take_screenshot @v1'), 'points the model at a cropped screenshot of this ref');
     assert.match(region, /\(320,340\)/, 'center coords appended');
+  });
+
+  await test('a named visual renders with its label and a capture (not read) note', () => {
+    const brief = makeBrief({
+      elements: [], text: [],
+      regions: [{ ref: '@v1', role: 'image', bbox: [0, 0, 300, 200], inViewport: true, named: true, label: 'Acme logo' }],
+    });
+    const region = reduce(brief, { includeText: true }).listing.split('\n').find(l => l.includes('[@v1]'));
+    assert.ok(region.includes('"Acme logo"'), 'shows the visual label');
+    assert.ok(region.includes('take_screenshot @v1 to capture'), 'named visual is captured to SHOW it');
+    assert.ok(!region.includes('unreadable'), 'a named visual is not marked unreadable');
   });
 
   await test('computeBriefHash: regions bust the hash, position does not', () => {
@@ -373,26 +384,28 @@ async function regionSuite() {
   console.log('\ncollectRegions:');
   const viewport = { width: 1000, height: 2000, scrollX: 0, scrollY: 0 };
 
-  await test('surfaces unnamed canvas/img; skips named, hidden, nested, titled, zero-size', () => {
+  await test('surfaces unnamed graphics + named visuals; skips decorative, tiny-named, hidden, nested, zero-size', () => {
     const snapshot = makeSnapshot([
       { tag: 'DIV',    parent: -1, backend: 100 },
-      { tag: 'CANVAS', parent: 0,  backend: 101, bounds: [10, 10, 200, 100] },               // ✓ unnamed canvas
-      { tag: 'IMG',    parent: 0,  backend: 102, attrs: { alt: 'product' }, bounds: [10, 120, 50, 50] }, // ✗ alt present
-      { tag: 'IMG',    parent: 0,  backend: 103, bounds: [10, 180, 50, 50] },                // ✓ alt-less img
-      { tag: 'BUTTON', parent: 0,  backend: 104, bounds: [10, 240, 40, 40] },
-      { tag: 'svg',    parent: 4,  backend: 105, bounds: [12, 242, 16, 16] },                // ✗ icon inside button
-      { tag: 'svg',    parent: 0,  backend: 106, bounds: [10, 300, 80, 80] },                // ✗ has <title> child
-      { tag: 'title',  parent: 6,  backend: 107 },
-      { tag: 'CANVAS', parent: 0,  backend: 108, attrs: { 'aria-hidden': 'true' }, bounds: [10, 400, 300, 200] }, // ✗ aria-hidden
-      { tag: 'CANVAS', parent: 0,  backend: 109, bounds: [10, 620, 0, 0] },                  // ✗ zero-area
+      { tag: 'CANVAS', parent: 0,  backend: 101, bounds: [10, 10, 200, 100] },                                   // ✓ unnamed canvas → read
+      { tag: 'IMG',    parent: 0,  backend: 102, attrs: { alt: 'Product photo' }, bounds: [10, 120, 200, 150] }, // ✓ named, big → show
+      { tag: 'IMG',    parent: 0,  backend: 103, bounds: [10, 280, 50, 50] },                                    // ✓ alt-less → read (unnamed, no floor)
+      { tag: 'IMG',    parent: 0,  backend: 104, attrs: { alt: '' }, bounds: [10, 340, 300, 200] },              // ✗ alt="" decorative
+      { tag: 'IMG',    parent: 0,  backend: 105, attrs: { alt: 'avatar' }, bounds: [10, 560, 40, 40] },          // ✗ named but below the size floor
+      { tag: 'BUTTON', parent: 0,  backend: 106, bounds: [10, 620, 40, 40] },
+      { tag: 'svg',    parent: 6,  backend: 107, bounds: [12, 622, 16, 16] },                                    // ✗ icon inside button
+      { tag: 'CANVAS', parent: 0,  backend: 108, attrs: { 'aria-hidden': 'true' }, bounds: [10, 680, 300, 200] },// ✗ aria-hidden
+      { tag: 'CANVAS', parent: 0,  backend: 109, bounds: [10, 900, 0, 0] },                                      // ✗ zero-area
     ]);
     const maps = buildSnapshotMaps(snapshot);
     const regions = collectRegions(snapshot, maps, viewport, {});
-    assert.deepStrictEqual(regions.map(r => r.role), ['canvas', 'image'], 'only the two unnamed graphics surface');
+    assert.deepStrictEqual(regions.map(r => r.role), ['canvas', 'image', 'image'], 'unnamed canvas, named img, and alt-less img surface');
+    assert.deepStrictEqual(regions.map(r => r.named), [false, true, false], 'named flag drives show-vs-read');
+    assert.strictEqual(regions[1].label, 'Product photo', 'named visual carries its label');
     assert.deepStrictEqual(regions[0].bbox, { x: 10, y: 10, width: 200, height: 100 }, 'canvas bbox in CSS px');
     assert.strictEqual(regions[0].inViewport, true);
     assert.strictEqual(regions[0].backendNodeId, 101, 'carries node id for lookup + crop');
-    assert.strictEqual(regions[1].backendNodeId, 103);
+    assert.strictEqual(regions[1].backendNodeId, 102);
   });
 
   await test('cross-origin iframe (no embedded doc) → an iframe region; same-origin does not', () => {
@@ -408,14 +421,17 @@ async function regionSuite() {
     assert.strictEqual(regions[0].backendNodeId, 301);
   });
 
-  await test('aria-label names a graphic; inViewportOnly drops off-screen regions', () => {
+  await test('aria-label surfaces a named visual; inViewportOnly drops off-screen graphics', () => {
     const snapshot = makeSnapshot([
-      { tag: 'CANVAS', parent: -1, backend: 200, attrs: { 'aria-label': 'Revenue chart' }, bounds: [0, 0, 100, 100] }, // ✗ named
-      { tag: 'CANVAS', parent: -1, backend: 201, bounds: [0, 5000, 100, 100] },              // off-screen (y beyond viewport)
+      { tag: 'CANVAS', parent: -1, backend: 200, attrs: { 'aria-label': 'Revenue chart' }, bounds: [0, 0, 100, 100] }, // named, in view
+      { tag: 'CANVAS', parent: -1, backend: 201, bounds: [0, 5000, 100, 100] },                                        // unnamed, off-screen
     ]);
     const maps = buildSnapshotMaps(snapshot);
-    assert.strictEqual(collectRegions(snapshot, maps, viewport, {}).length, 1, 'off-screen still listed without the filter');
-    assert.strictEqual(collectRegions(snapshot, maps, viewport, { inViewportOnly: true }).length, 0, 'inViewportOnly drops it');
+    const all = collectRegions(snapshot, maps, viewport, {});
+    assert.deepStrictEqual(all.map(r => r.named), [true, false], 'the aria-labeled graphic is a named visual; the other is unnamed');
+    assert.strictEqual(all[0].label, 'Revenue chart', 'named visual carries its aria-label');
+    const filtered = collectRegions(snapshot, maps, viewport, { inViewportOnly: true });
+    assert.deepStrictEqual(filtered.map(r => r.backendNodeId), [200], 'inViewportOnly keeps the in-view named one, drops the off-screen one');
   });
 
   await test('collectPasswordIds: finds <input type=password>, ignores other inputs/tags', () => {
@@ -455,13 +471,13 @@ async function screenshotSuite() {
     await test('region ref → clip from its bbox, captureBeyondViewport on (off-screen ok)', async () => {
       const s = fakeSession();
       const brief = makeBrief({
-        regions: [{ ref: '@r1', role: 'canvas', bbox: { x: 5, y: 600, width: 640, height: 480 }, inViewport: false }],
+        regions: [{ ref: '@v1', role: 'canvas', bbox: { x: 5, y: 600, width: 640, height: 480 }, inViewport: false }],
       });
-      const out = await screenshot({ session: s, brief, ref: '@r1' });
+      const out = await screenshot({ session: s, brief, ref: '@v1' });
       assert.deepStrictEqual(s.calls[0].clip, { x: 5, y: 600, width: 640, height: 480, scale: 1 });
       assert.strictEqual(s.calls[0].captureBeyondViewport, true, 'off-screen graphic captured without scrolling');
       assert.strictEqual(out.cropped, true);
-      assert.strictEqual(out.ref, '@r1');
+      assert.strictEqual(out.ref, '@v1');
     });
 
     await test('element ref with array bbox is normalized to a clip', async () => {
@@ -473,7 +489,7 @@ async function screenshotSuite() {
 
     await test('unknown/boxless ref degrades to a full-viewport capture', async () => {
       const s = fakeSession();
-      const out = await screenshot({ session: s, brief: makeBrief(), ref: '@r9' });
+      const out = await screenshot({ session: s, brief: makeBrief(), ref: '@v9' });
       assert.strictEqual(s.calls[0].clip, undefined);
       assert.strictEqual(out.cropped, false);
     });
@@ -482,8 +498,8 @@ async function screenshotSuite() {
       const s1 = fakeSession();
       const out1 = await screenshot({ session: s1, brief: makeBrief() });   // no ref → describe
       const s2 = fakeSession();
-      const brief = makeBrief({ regions: [{ ref: '@r1', role: 'canvas', bbox: { x: 0, y: 0, width: 100, height: 100 }, inViewport: true }] });
-      const out2 = await screenshot({ session: s2, brief, ref: '@r1' });     // ref → cropped read
+      const brief = makeBrief({ regions: [{ ref: '@v1', role: 'canvas', bbox: { x: 0, y: 0, width: 100, height: 100 }, inViewport: true }] });
+      const out2 = await screenshot({ session: s2, brief, ref: '@v1' });     // ref → cropped read
       assert.strictEqual(s1.calls[0].format, 'jpeg');
       assert.strictEqual(s2.calls[0].format, 'jpeg');
       assert.ok(s2.calls[0].quality > s1.calls[0].quality, 'cropped read encoded at higher quality than a full-page describe');
@@ -638,12 +654,13 @@ async function validateSuite() {
     }
   });
 
-  await test('requires a non-empty intent under 15 words', () => {
+  await test('requires a non-empty intent of 20 words or fewer', () => {
     const lookup = { '@e1': 111 };
+    const twentyOne = Array.from({ length: 21 }, (_, i) => `w${i + 1}`).join(' ');
     const cases = [
       [action('click', { ref: '@e1', args: { intent: undefined } }), /missing required arg "intent"/],
       [action('click', { ref: '@e1', args: { intent: '   ' } }), /must not be empty/],
-      [action('click', { ref: '@e1', args: { intent: 'one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen' } }), /under 15 words/],
+      [action('click', { ref: '@e1', args: { intent: twentyOne } }), /20 words or fewer/],
     ];
     for (const [act, re] of cases) {
       const { ok, errors } = validate([act], lookup, registry);
@@ -657,9 +674,9 @@ async function validateSuite() {
     assert.strictEqual(ok.length, 1);
   });
 
-  await test('take_screenshot: optional ref — accepts @e/@t/@r, valid with none', () => {
-    const lookup = { '@e1': 111, '@t1': 222, '@r1': 333 };
-    for (const ref of ['@e1', '@t1', '@r1']) {
+  await test('take_screenshot: optional ref — accepts @e/@t/@v, valid with none', () => {
+    const lookup = { '@e1': 111, '@t1': 222, '@v1': 333 };
+    for (const ref of ['@e1', '@t1', '@v1']) {
       const { ok, errors } = validate([action('take_screenshot', { ref })], lookup, registry);
       assert.strictEqual(ok.length, 1, `${ref} accepted: ${JSON.stringify(errors)}`);
     }
@@ -668,16 +685,16 @@ async function validateSuite() {
   });
 
   await test('take_screenshot: a present-but-unknown ref is rejected', () => {
-    const { ok, errors } = validate([action('take_screenshot', { ref: '@r9' })], { '@r1': 333 }, registry);
+    const { ok, errors } = validate([action('take_screenshot', { ref: '@v9' })], { '@v1': 333 }, registry);
     assert.strictEqual(ok.length, 0);
     assert.match(errors[0].error, /not present in current snapshot/);
   });
 
-  await test('only take_screenshot accepts an @r ref; click/select_text reject it', () => {
-    const lookup = { '@r1': 333 };
+  await test('only take_screenshot accepts a @v ref; click/select_text reject it', () => {
+    const lookup = { '@v1': 333 };
     for (const verb of ['click', 'select_text']) {
-      const { ok, errors } = validate([action(verb, { ref: '@r1' })], lookup, registry);
-      assert.strictEqual(ok.length, 0, `${verb} must reject @r`);
+      const { ok, errors } = validate([action(verb, { ref: '@v1' })], lookup, registry);
+      assert.strictEqual(ok.length, 0, `${verb} must reject @v`);
       assert.match(errors[0].error, /requires ref type/);
     }
   });
@@ -1213,19 +1230,19 @@ async function scratchpadSuite() {
     assert.ok(!plain.includes('max-width:960px'), 'plain layout omits default report frame');
   });
 
-  await test('filenameStemFromHint makes durable language slugs', () => {
-    assert.strictEqual(filenameStemFromHint('Read the chart labels & values!'), 'read-the-chart-labels-and-values');
-    assert.strictEqual(filenameStemFromHint('  Résumé / Q2 – totals  '), 'resume-q2-totals');
-    assert.strictEqual(filenameStemFromHint('---'), null);
+  await test('filenameStem makes durable language slugs', () => {
+    assert.strictEqual(filenameStem('Read the chart labels & values!'), 'read-the-chart-labels-and-values');
+    assert.strictEqual(filenameStem('  Résumé / Q2 – totals  '), 'resume-q2-totals');
+    assert.strictEqual(filenameStem('---'), null);
   });
 
-  await test('hinted screenshots include slug and supplied id', () => {
+  await test('captioned screenshots include slug and supplied id', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'browser-agent-scratch-'));
     try {
       const scratch = createScratchpad({ dir, runId: 'run-1' });
       const image = scratch.saveImage({
         base64: Buffer.from('jpg bytes').toString('base64'),
-        hint: 'Read chart labels',
+        reason: 'Read chart labels',
         id: 7,
         ext: 'jpg',
       });
@@ -1274,14 +1291,14 @@ async function scratchpadSuite() {
     }
   });
 
-  await test('hinted assets use screenshot-like naming with original extension and supplied id', () => {
+  await test('captioned assets use durable naming with original extension and supplied id', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'browser-agent-scratch-'));
     try {
       const scratch = createScratchpad({ dir, runId: 'run-1' });
       const file = scratch.saveAsset({
         filename: 'source report.pdf',
         base64: Buffer.from('pdf').toString('base64'),
-        hint: 'Quarterly revenue report',
+        reason: 'Quarterly revenue report',
         id: 12,
       });
 
@@ -1386,17 +1403,21 @@ async function promptSuite() {
       wait: registry.wait,
       take_screenshot: registry.take_screenshot,
       save_text: registry.save_text,
+      save_record: registry.save_record,
       done: registry.done,
     });
     assert.ok(prompt.includes('click[@e|@t]'), 'click ref types should be shown');
     assert.ok(prompt.includes('type[@e] (intent: string, text: string, clear: boolean?, submit: boolean?)'), 'required + optional args should be shown');
     assert.ok(prompt.includes('wait (intent: string, ms: number)'), 'wait args should be shown');
-    assert.ok(prompt.includes('take_screenshot[@e|@t|@r] (ref: string?, intent: string, hint: string?)'), 'optional ref types should be shown');
+    assert.ok(prompt.includes('take_screenshot[@e|@t|@v] (ref: string?, intent: string)'), 'optional ref types should be shown');
+    assert.ok(prompt.includes('save_text (intent: string, content: string, summary: string)'), 'save_text should remain evidence memory');
+    assert.ok(prompt.includes('save_record (intent: string, content: string, summary: string)'), 'save_record should expose final-record ledger op');
     assert.ok(prompt.includes('done (intent: string, result: string?)'), 'optional args should be marked');
-    assert.ok(prompt.includes('describing where this'), 'intent rule should be explicit');
-    assert.ok(prompt.includes('never pass punctuation, CSS selectors, words, or coordinates as ref'), 'screenshot refs should be hardened');
+    assert.ok(prompt.includes('20 words or fewer'), 'intent rule should be explicit');
+    assert.ok(prompt.includes('never punctuation, selectors, words, or coordinates'), 'screenshot refs should be hardened');
+    assert.ok(prompt.includes('For final deliverable records, use save_record'), 'record ledger guidance should be explicit');
     assert.ok(prompt.includes('Do not save intermediate report drafts'), 'operating rules should discourage draft-saving');
-    assert.ok(prompt.includes('Do not use save_text for intermediate answer drafts'), 'save_text should discourage drafts');
+    assert.ok(prompt.includes('Do not use save_text for final deliverable records'), 'save_text should not count final records');
   });
 
   await test('context is omitted (no header) when null/empty', () => {
@@ -1683,11 +1704,11 @@ async function loopSuite() {
     visionMod.describe = async () => ({ summary: 'short', description: 'full' });
     const mkBrief = () => makeBrief({
       regions: [
-        { ref: '@r1', role: 'image', bbox: { x: 0, y: 0, width: 10, height: 10 } },
-        { ref: '@r2', role: 'image', bbox: { x: 20, y: 0, width: 10, height: 10 } },
-        { ref: '@r3', role: 'image', bbox: { x: 40, y: 0, width: 10, height: 10 } },
+        { ref: '@v1', role: 'image', bbox: { x: 0, y: 0, width: 10, height: 10 } },
+        { ref: '@v2', role: 'image', bbox: { x: 20, y: 0, width: 10, height: 10 } },
+        { ref: '@v3', role: 'image', bbox: { x: 40, y: 0, width: 10, height: 10 } },
       ],
-      lookup: { '@e1': 111, '@t1': 222, '@r1': 1, '@r2': 2, '@r3': 3 },
+      lookup: { '@e1': 111, '@t1': 222, '@v1': 1, '@v2': 2, '@v3': 3 },
     });
     const runRefs = async (refs) => {
       installFakeProvider([...refs.map(ref => [action('take_screenshot', { ref })]), [action('done', { args: {} })]]);
@@ -1696,13 +1717,13 @@ async function loopSuite() {
       return run({ session, task: 'inspect crops', config: baseConfig({ loop: { maxSteps: 5, maxStuckRepeats: 2 }, scratchpad: { enabled: false } }) });
     };
     try {
-      const distinct = await runRefs(['@r1', '@r2', '@r3']);
+      const distinct = await runRefs(['@v1', '@v2', '@v3']);
       assert.strictEqual(distinct.status, 'completed', distinct.error);
-      assert.deepStrictEqual(distinct.steps.slice(0, 3).map(s => s.action.ref), ['@r1', '@r2', '@r3']);
+      assert.deepStrictEqual(distinct.steps.slice(0, 3).map(s => s.action.ref), ['@v1', '@v2', '@v3']);
 
-      const repeated = await runRefs(['@r1', '@r1', '@r1']);
+      const repeated = await runRefs(['@v1', '@v1', '@v1']);
       assert.strictEqual(repeated.status, 'stuck', repeated.error);
-      assert.deepStrictEqual(repeated.steps.map(s => s.action.ref), ['@r1', '@r1']);
+      assert.deepStrictEqual(repeated.steps.map(s => s.action.ref), ['@v1', '@v1']);
     } finally {
       visionMod.describe = origDescribe;
     }
@@ -2131,10 +2152,39 @@ async function planSuite() {
 
   // Every Step-0 / reflect / report call is tool-less; classify by a unique
   // marker in each one's system prompt so a run with several of them is legible.
-  const isPlanReq = (q) => (!q.tools || !q.tools.length) && /Reply with the plan only/.test(q.system || '');
+  const isPlanReq = (q) => (!q.tools || !q.tools.length) && /Reply with ONLY valid JSON/.test(q.system || '');
   const isReflectReq = (q) => (!q.tools || !q.tools.length) && /pausing mid-task to reflect/.test(q.system || '');
   const isReportReq = (q) => (!q.tools || !q.tools.length) && /You write final Markdown reports/.test(q.system || '');
   const isPlannerReq = (q) => q.tools && q.tools.length > 0;
+
+  await test('parsePlanResponse extracts plan prose and the record contract', () => {
+    const { parsePlanResponse } = require('../lib/planning');
+    const parsed = parsePlanResponse(JSON.stringify({
+      plan: 'Search official listings and save each complete job.',
+      recordContract: {
+        recordName: 'job',
+        target: 3,
+        requiredFields: {
+          company: 'Company name',
+          title: 'Role title',
+          url: 'Direct job URL',
+        },
+        optionalFields: ['salary'],
+      },
+    }));
+
+    assert.strictEqual(parsed.plan, 'Search official listings and save each complete job.');
+    assert.deepStrictEqual(parsed.recordContract, {
+      recordName: 'job',
+      target: 3,
+      requiredFields: {
+        company: 'Company name',
+        title: 'Role title',
+        url: 'Direct job URL',
+      },
+      optionalFields: { salary: 'salary' },
+    });
+  });
 
   await test('buildSystemPrompt: plan sits before context, context stays last', () => {
     const reg = { click: registry.click, done: registry.done };
@@ -2433,6 +2483,54 @@ async function memorySuite() {
     assert.ok(t2.length < 5000, 'preview should not dump the full saved note');
   });
 
+  await test('record contracts are shown as progress and auto-complete at target', async () => {
+    const contractPlan = JSON.stringify({
+      plan: 'Search job boards and save each complete job record.',
+      recordContract: {
+        recordName: 'job',
+        target: 3,
+        requiredFields: {
+          company: 'Company name',
+          title: 'Role title',
+          url: 'Direct job listing URL',
+          contacts: '1-3 people at the company with name and title',
+          dm: '2-3 sentence message',
+        },
+        optionalFields: {},
+      },
+    });
+    const reqs = installFakeProvider(
+      [
+        [action('save_record', { args: { content: 'Acme — Head of Product', summary: 'Acme job' } })],
+        [action('save_record', { args: { content: 'Beta — Senior PM', summary: 'Beta job' } })],
+        [action('save_record', { args: { content: 'Cygnus — CPO', summary: 'Cygnus job' } })],
+        [action('click', { ref: '@e1' })],
+      ],
+      [contractPlan],
+    );
+    const session = makeFakeSession([makeBrief, makeBrief, makeBrief, makeBrief]);
+    const r = await run({
+      session,
+      task: 'Find 3 solid jobs. For every job, list 1-3 contacts.',
+      config: baseConfig({ plan: { enabled: true } }),
+    });
+
+    assert.strictEqual(r.status, 'completed', r.error);
+    assert.strictEqual(r.result, 'Collected requested 3 job records.');
+    assert.deepStrictEqual(r.steps.map(s => s.action.verb), ['save_record', 'save_record', 'save_record']);
+    assert.strictEqual(r.records.length, 3);
+    assert.strictEqual(r.recordContract.recordName, 'job');
+    assert.strictEqual(r.recordContract.target, 3);
+
+    const plannerReqs = reqs.filter(q => q.tools && q.tools.length);
+    assert.strictEqual(plannerReqs.length, 3, 'loop should stop before the extra click turn');
+    assert.ok(plannerReqs[0].messages[0].content.includes('Record target: 3 job records.'));
+    assert.ok(plannerReqs[0].messages[0].content.includes('Saved records: 0/3.'));
+    assert.ok(plannerReqs[1].messages[0].content.includes('Saved records: 1/3.'));
+    assert.ok(plannerReqs[2].messages[0].content.includes('Saved records: 2/3.'));
+    assert.ok(plannerReqs[1].messages[0].content.includes('record 1/3'));
+  });
+
   await test('turn log includes the simplified LLM payload', async () => {
     installFakeProvider([[action('done', { args: {} })]]);
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'browser-agent-log-'));
@@ -2525,7 +2623,7 @@ async function providerTranslationSuite() {
 
   await test('toolsFromRegistry exposes optional screenshot ref', () => {
     const [tool] = modelMod.toolsFromRegistry({ take_screenshot: registry.take_screenshot });
-    assert.deepStrictEqual(tool.inputSchema, { ref: 'string?', intent: 'string', hint: 'string?' });
+    assert.deepStrictEqual(tool.inputSchema, { ref: 'string?', intent: 'string' });
     const schema = buildJsonSchema(tool.inputSchema);
     assert.deepStrictEqual(schema.required, ['intent']);
     assert.strictEqual(schema.properties.ref.type, 'string');
@@ -2693,12 +2791,12 @@ async function visionDispatchSuite() {
     let seen;
     openai.describe = async (req) => { seen = req; return { kind: 'vision', text: '{"summary":"a login page","description":"full detail"}' }; };
     try {
-      const out = await visionMod.describe({ imageBase64: 'BASE64', mimeType: 'image/jpeg', hint: 'the button' });
+      const out = await visionMod.describe({ imageBase64: 'BASE64', mimeType: 'image/jpeg' });
       assert.strictEqual(seen.model, 'gpt-5.4-mini', 'config model forwarded to the adapter');
       assert.strictEqual(seen.imageBase64, 'BASE64');
       assert.strictEqual(seen.cacheKey, 'browser-agent:vision');
       assert.strictEqual(seen.maxTokens, 1024, 'config maxTokens forwarded');
-      assert.match(seen.prompt, /Focus especially on: the button/, 'hint folded into prompt');
+      assert.ok(!/Focus especially on/.test(seen.prompt), 'no caller hint folded into the vision prompt');
       assert.deepStrictEqual(out, { summary: 'a login page', description: 'full detail' });
     } finally {
       openai.describe = origDescribe;
