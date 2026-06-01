@@ -47,8 +47,8 @@ function parseArgs(argv) {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--task' || a === '-t') args.task = value(argv, i++, a);
-    else if (a === '--provider' || a === '-p') override.provider = value(argv, i++, a);
-    else if (a === '--model') override.model = value(argv, i++, a);
+    else if (a === '--provider' || a === '-p') { ((override.models ??= {}).primary ??= {}).provider = value(argv, i++, a); }
+    else if (a === '--model') { ((override.models ??= {}).primary ??= {}).model = value(argv, i++, a); }
     else if (a === '--context' || a === '-c') override.context = value(argv, i++, a);
     else if (a === '--executor') override.executor.backend = value(argv, i++, a);
     else if (a === '--help' || a === '-h') { printHelp(); process.exit(0); }
@@ -94,8 +94,9 @@ Environment:
 }
 
 function validateConfig(config) {
-  if (!PROVIDERS.has(config.provider)) {
-    usageError(`unknown provider "${config.provider}" (expected: ${[...PROVIDERS].join(', ')})`);
+  const primaryProvider = config.models?.primary?.provider;
+  if (!PROVIDERS.has(primaryProvider)) {
+    usageError(`unknown provider "${primaryProvider}" (expected: ${[...PROVIDERS].join(', ')})`);
   }
   const backend = config.executor?.backend;
   if (!EXECUTORS.has(backend)) {
@@ -130,6 +131,7 @@ function buildHandoff(runArtifact, config = {}) {
     runId: runArtifact.id,
     task: runArtifact.task,
     context,
+    plan: runArtifact.plan ?? null,
     result: runArtifact.result ?? null,
     report: {
       markdown: runArtifact.report ?? null,

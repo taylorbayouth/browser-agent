@@ -1,7 +1,46 @@
 {
-  "provider": "openai",
-  "model": "gpt-5.4-mini",
-  "reasoningEffort": "medium",
+  "models": {
+    "plan": {
+      "enabled": true,
+      "provider": "openai",
+      "model": "gpt-5.5",
+      "reasoningEffort": "high",
+      "timeoutMs": 30000
+    },
+    "primary": {
+      "provider": "openai",
+      "model": "gpt-5.4-mini",
+      "reasoningEffort": "medium",
+      "maxTokens": 4096,
+      "timeoutMs": 10000
+    },
+    "vision": {
+      "provider": "openai",
+      "model": "gpt-5.4-mini",
+      "prompt": "Describe what you see in detail. Aim for 1500-2000 characters.",
+      "maxTokens": 1024,
+      "timeoutMs": 10000
+    },
+    "reflect": {
+      "enabled": true,
+      "provider": "openai",
+      "model": "gpt-5.5",
+      "reasoningEffort": "high",
+      "timeoutMs": 30000,
+      "maxReflections": 10,
+      "cooldownTurns": 4,
+      "budgetTurnFraction": 0.6,
+      "savedMaxChars": 16000
+    },
+    "report": {
+      "enabled": true,
+      "provider": "openai",
+      "model": "gpt-5.5",
+      "reasoningEffort": "high",
+      "timeoutMs": 60000,
+      "rawTokenBudget": 3000
+    }
+  },
 
   "chrome": {
     "executablePath": null
@@ -21,16 +60,6 @@
     "sparsePageMinNodes": 2,
     "maxSameDirectionScrolls": 3,
     "maxScrollReversals": 3
-  },
-
-  "reflect": {
-    "enabled": true,
-    "provider": "openai",
-    "model": "gpt-5.5",
-    "maxReflections": 10,
-    "cooldownTurns": 4,
-    "budgetTurnFraction": 0.6,
-    "savedMaxChars": 16000
   },
 
   "settle": {
@@ -64,13 +93,6 @@
       "scrollDurationMs": 300,
       "scrollJitterPx": 4
     }
-  },
-
-  "vision": {
-    "provider": "openai",
-    "model": "gpt-5.4-mini",
-    "prompt": "Describe what you see in detail. Aim for 1500-2000 characters.",
-    "maxTokens": 1024
   },
 
   "log": {

@@ -102,7 +102,7 @@ function installFakeProvider(turns, reflectTurns = []) {
   planMod.providers.fake = {
     name: 'fake',
     defaultModel: 'fake-1',
-    async plan(req) {
+    async callModel(req) {
       requests.push(req);
       // A no-tools call is reflection or final report synthesis: a real provider
       // can only reply with prose, so we return text and do NOT advance the action
@@ -133,20 +133,25 @@ function action(verb, extra = {}) {
 }
 
 const baseConfig = (overrides = {}) => ({
-  provider: 'fake',
-  model: null,
+  models: {
+    primary: { provider: 'fake', model: null, reasoningEffort: null, ...(overrides.primary || {}) },
+    vision: { provider: 'fake', model: null, ...(overrides.vision || {}) },
+    // Reflection off by default so the guard tests exercise the stuck/empty/
+    // max-steps aborts in isolation; the reflection suite opts in.
+    reflect: { enabled: false, provider: 'fake', model: null, ...(overrides.reflect || {}) },
+    // Final report synthesis is covered explicitly; most loop tests inspect
+    // planner prompts and should not add a trailing no-tools report call.
+    report: { enabled: false, provider: 'fake', model: null, ...(overrides.report || {}) },
+    // Step 0 off by default too: it would otherwise prepend a no-tools planning
+    // call to every run and consume the reflectTurns queue. The plan suite opts in.
+    plan: { enabled: false, provider: 'fake', model: null, ...(overrides.plan || {}) },
+  },
   context: overrides.context ?? null,
   loop: { maxSteps: 10, shortCircuitOnNoChange: false, pollMs: 0, maxNoChangePolls: 1, maxEmptyPlans: 3, ...(overrides.loop || {}) },
   settle: { afterActionMs: 0, maxMs: 0 },
   view: { includeText: true, includeCoords: true, maxTextChars: 200, dedupeText: true },
   executor: { backend: 'cdp' },
   log: { enabled: false },
-  // Reflection off by default so the guard tests exercise
-  // the stuck/empty/max-steps aborts in isolation; the reflection suite opts in.
-  reflect: { enabled: false, ...(overrides.reflect || {}) },
-  // Final report synthesis is covered explicitly; most loop tests inspect
-  // planner prompts and should not add a trailing no-tools report call.
-  report: { enabled: false, ...(overrides.report || {}) },
 });
 
 // ─── suites ──────────────────────────────────────────────────────────────────
@@ -971,13 +976,13 @@ async function configSuite() {
       process.env.BROWSER_AGENT_PROVIDER = 'anthropic';
       process.env.BROWSER_AGENT_EXECUTOR = 'cdp';
       const overridden = loadConfig({ path: path.join(os.tmpdir(), 'missing-browser-agent-config.json'), reload: true });
-      assert.strictEqual(overridden.provider, 'anthropic');
+      assert.strictEqual(overridden.models.primary.provider, 'anthropic');
       assert.strictEqual(overridden.executor.backend, 'cdp');
 
       delete process.env.BROWSER_AGENT_PROVIDER;
       delete process.env.BROWSER_AGENT_EXECUTOR;
       const fresh = loadConfig({ path: path.join(os.tmpdir(), 'missing-browser-agent-config.json'), reload: true });
-      assert.strictEqual(fresh.provider, DEFAULTS.provider);
+      assert.strictEqual(fresh.models.primary.provider, DEFAULTS.models.primary.provider);
       assert.strictEqual(fresh.executor.backend, DEFAULTS.executor.backend);
     } finally {
       if (oldProvider === undefined) delete process.env.BROWSER_AGENT_PROVIDER;
@@ -2093,7 +2098,7 @@ async function reflectSuite() {
       loop: { shortCircuitOnNoChange: true, pollMs: 0, maxNoChangePolls: 1, maxStuckRepeats: 2 },
       reflect: { enabled: true, model: 'reflect-model-x', budgetTurnFraction: 0.99 },
     });
-    cfg.model = 'planner-model';   // baseConfig doesn't forward a top-level model override
+    cfg.models.primary.model = 'planner-model';
     await run({ session, task: 'x', config: cfg });
     const reflectReq = reqs.find(q => !q.tools || q.tools.length === 0);
     assert.ok(reflectReq, 'a reflection request was made');
@@ -2113,6 +2118,156 @@ async function reflectSuite() {
     assert.ok(clipped.length < md.length, 'overall content trimmed');
     // Under the limit ⇒ returned unchanged.
     assert.strictEqual(clipSaved('### Only\nshort', 200), '### Only\nshort');
+  });
+}
+
+async function planSuite() {
+  console.log('\nplan (step 0):');
+
+  const { buildReflectMessage } = require('../lib/reflect');
+  const { buildReportMessage } = require('../lib/report');
+
+  // Every Step-0 / reflect / report call is tool-less; classify by a unique
+  // marker in each one's system prompt so a run with several of them is legible.
+  const isPlanReq = (q) => (!q.tools || !q.tools.length) && /Reply with the plan only/.test(q.system || '');
+  const isReflectReq = (q) => (!q.tools || !q.tools.length) && /pausing mid-task to reflect/.test(q.system || '');
+  const isReportReq = (q) => (!q.tools || !q.tools.length) && /You write final Markdown reports/.test(q.system || '');
+  const isPlannerReq = (q) => q.tools && q.tools.length > 0;
+
+  await test('buildSystemPrompt: plan sits before context, context stays last', () => {
+    const reg = { click: registry.click, done: registry.done };
+    const base = buildSystemPrompt(reg);
+    const plan = 'Start at official docs, capture version numbers, deliver a dated changelog table.';
+    const ctx = 'The user is Taylor.';
+    const withPlan = buildSystemPrompt(reg, ctx, plan);
+    assert.ok(withPlan.startsWith(base), 'static template stays an intact prefix');
+    assert.ok(withPlan.includes('Plan of Action ('), 'plan header present');
+    assert.ok(withPlan.includes(plan), 'plan prose present');
+    assert.ok(withPlan.endsWith(ctx), 'context is still the very last block');
+    assert.ok(withPlan.indexOf('Plan of Action') < withPlan.indexOf('Context ('), 'plan precedes context');
+  });
+
+  await test('buildSystemPrompt: empty/blank plan is omitted (identical to no plan)', () => {
+    const reg = { click: registry.click, done: registry.done };
+    const withCtx = buildSystemPrompt(reg, 'ctx');
+    assert.strictEqual(buildSystemPrompt(reg, 'ctx', null), withCtx, 'null plan → identical');
+    assert.strictEqual(buildSystemPrompt(reg, 'ctx', '   '), withCtx, 'blank plan → identical');
+    assert.ok(!buildSystemPrompt(reg).includes('Plan of Action'), 'no plan header when absent');
+  });
+
+  await test('buildReflectMessage / buildReportMessage carry the plan only when present', () => {
+    const plan = 'Compare three vendors on price and SLA; deliver a recommendation.';
+    const rfWith = buildReflectMessage({ task: 't', plan, url: 'u', title: 'T', saved: 's' });
+    assert.ok(rfWith.content.includes('plan of action for this run'), 'reflect labels the plan');
+    assert.ok(rfWith.content.includes(plan), 'reflect includes the plan prose');
+    const rfNo = buildReflectMessage({ task: 't', url: 'u', title: 'T', saved: 's' });
+    assert.ok(!rfNo.content.includes('plan of action for this run'), 'reflect omits the plan block when absent');
+
+    const rpWith = buildReportMessage({ task: 't', plan, status: 'completed', evidence: 'e' });
+    assert.ok(rpWith.content.includes("agent's plan of action"), 'report labels the plan');
+    assert.ok(rpWith.content.includes(plan), 'report includes the plan prose');
+    const rpNo = buildReportMessage({ task: 't', status: 'completed', evidence: 'e' });
+    assert.ok(!rpNo.content.includes("agent's plan of action"), 'report omits the plan block when absent');
+  });
+
+  await test('step 0 threads the plan into the planner system prompt and the report', async () => {
+    const PLAN = 'Begin at the official pricing page, corroborate on one review site, capture each tier price and included seats, then deliver a tier comparison table.';
+    const reqs = installFakeProvider(
+      [
+        [action('save_text', { args: { content: 'Tier A $10', summary: 'Tier A' } })],
+        [action('done', { args: { result: 'ok' } })],
+      ],
+      [PLAN, '# Report\n\n- Tier A'],   // no-tools queue: [0]=plan, [1]=report
+    );
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'browser-agent-plan-'));
+    try {
+      const r = await run({
+        session: makeFakeSession([makeBrief, makeBrief]),
+        task: 'compare pricing tiers',
+        config: {
+          ...baseConfig({
+            plan: { enabled: true },
+            report: { enabled: true, provider: 'fake', model: 'report-model' },
+          }),
+          scratchpad: { enabled: true, dir },
+        },
+      });
+      assert.strictEqual(r.status, 'completed', r.error);
+      assert.strictEqual(r.plan, PLAN, 'plan is recorded on the run artifact');
+
+      const planReq = reqs.find(isPlanReq);
+      assert.ok(planReq, 'a Step-0 plan call was made');
+      assert.ok(planReq.messages[0].content.includes('compare pricing tiers'), 'plan call sees the task');
+
+      // Every planner turn carries the plan inside its (cached) system prompt.
+      const planner = reqs.filter(isPlannerReq);
+      assert.ok(planner.length >= 2, 'planner ran at least twice');
+      for (const q of planner) {
+        assert.ok(q.system.includes('Plan of Action ('), 'planner system has the Plan of Action block');
+        assert.ok(q.system.includes(PLAN), 'planner system carries the plan prose');
+      }
+
+      // The final report call sees the plan too — the report-quality payoff.
+      const reportReq = reqs.find(isReportReq);
+      assert.ok(reportReq, 'a report call was made');
+      assert.ok(reportReq.messages[0].content.includes(PLAN), 'report message carries the plan');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('step 0 threads the plan into a reflection turn', async () => {
+    const PLAN = 'Search the docs, then pivot to the changelog if the docs are thin.';
+    const reqs = installFakeProvider(
+      [
+        [action('click', { ref: '@e1' })],   // turns 1-3: same dead click, no page change
+        [action('click', { ref: '@e1' })],
+        [action('click', { ref: '@e1' })],
+        [action('scroll', { args: { direction: 'down' } })],   // the pivot
+        [action('done', { args: { result: 'ok' } })],
+      ],
+      [PLAN, 'Pivot: scroll down to reveal the list'],   // [0]=plan, [1]=reflection decision
+    );
+    const r = await run({
+      session: makeFakeSession([makeBrief]),
+      task: 'x',
+      config: baseConfig({
+        loop: { shortCircuitOnNoChange: true, pollMs: 0, maxNoChangePolls: 1, maxStuckRepeats: 2 },
+        plan: { enabled: true },
+        reflect: { enabled: true, maxReflections: 10, cooldownTurns: 4, budgetTurnFraction: 0.99 },
+      }),
+    });
+    assert.strictEqual(r.status, 'completed', r.error);
+    assert.strictEqual(r.plan, PLAN);
+    const reflectReq = reqs.find(isReflectReq);
+    assert.ok(reflectReq, 'a reflection turn fired');
+    assert.ok(reflectReq.messages[0].content.includes(PLAN), 'reflection message carries the plan');
+  });
+
+  await test('step 0 disabled → no plan call and no Plan of Action block', async () => {
+    const reqs = installFakeProvider([[action('done', { args: { result: 'ok' } })]]);
+    const r = await run({
+      session: makeFakeSession([makeBrief]),
+      task: 'x',
+      config: baseConfig({ plan: { enabled: false } }),
+    });
+    assert.strictEqual(r.status, 'completed', r.error);
+    assert.strictEqual(r.plan, null, 'no plan recorded when disabled');
+    assert.ok(!reqs.some(isPlanReq), 'no Step-0 plan call was made');
+    assert.ok(reqs.filter(isPlannerReq).every(q => !q.system.includes('Plan of Action')), 'planner system has no plan block');
+  });
+
+  await test('step 0 failure never breaks the run (proceeds with no plan)', async () => {
+    const reqs = installFakeProvider([[action('done', { args: { result: 'ok' } })]]);
+    const r = await run({
+      session: makeFakeSession([makeBrief]),
+      task: 'x',
+      // A bogus plan provider makes the Step-0 call throw; the loop must swallow it.
+      config: baseConfig({ plan: { enabled: true, provider: 'no-such-provider' } }),
+    });
+    assert.strictEqual(r.status, 'completed', r.error);
+    assert.strictEqual(r.plan, null, 'no plan recorded when Step 0 fails');
+    assert.ok(reqs.filter(isPlannerReq).every(q => !q.system.includes('Plan of Action')), 'planner ran without a plan block');
   });
 }
 
@@ -2485,7 +2640,7 @@ async function geminiSuite() {
       };
     };
     try {
-      const out = await gemini.plan({
+      const out = await gemini.callModel({
         system: 'SYS',
         tools: [{ name: 'done', description: 'finish', inputSchema: { result: 'string?' } }],
         messages: [{ role: 'user', content: 'go' }],
@@ -2573,7 +2728,9 @@ async function cacheSuite() {
     const openai = require('../lib/providers/openai');
     const origFetch = global.fetch;
     const origKey = process.env.OPENAI_API_KEY;
+    const origRetention = process.env.OPENAI_PROMPT_CACHE_RETENTION;
     process.env.OPENAI_API_KEY = 'test-key';
+    process.env.OPENAI_PROMPT_CACHE_RETENTION = '24h';
     const captured = [];
     global.fetch = async (url, opts) => {
       captured.push({ url, body: JSON.parse(opts.body) });
@@ -2588,16 +2745,21 @@ async function cacheSuite() {
     };
     try {
       const base = { system: 's', tools: [], messages: [{ role: 'user', content: 'hi' }] };
-      await openai.plan({ ...base, reasoningEffort: 'high' });
+      await openai.callModel({ ...base, reasoningEffort: 'high', cacheKey: 'run-1' });
       assert.ok(captured[0].url.endsWith('/responses'), 'reasoning requests use Responses API');
       assert.deepStrictEqual(captured[0].body.reasoning, { effort: 'high' }, 'forwarded to the Responses request body');
-      await openai.plan({ ...base, reasoningEffort: null });
+      assert.strictEqual(captured[0].body.prompt_cache_key, 'run-1', 'Responses receives cache routing key');
+      assert.strictEqual(captured[0].body.prompt_cache_retention, '24h', 'Responses receives cache retention');
+      await openai.callModel({ ...base, reasoningEffort: null, cacheKey: 'run-1' });
       assert.ok(captured[1].url.endsWith('/chat/completions'), 'null reasoning uses Chat Completions');
       assert.strictEqual('reasoning' in captured[1].body, false, 'omitted when null (non-reasoning models reject it)');
       assert.strictEqual('reasoning_effort' in captured[1].body, false, 'old Chat field remains omitted');
+      assert.strictEqual(captured[1].body.prompt_cache_key, 'run-1', 'Chat receives cache routing key');
+      assert.strictEqual(captured[1].body.prompt_cache_retention, '24h', 'Chat receives cache retention');
     } finally {
       global.fetch = origFetch;
       if (origKey === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = origKey;
+      if (origRetention === undefined) delete process.env.OPENAI_PROMPT_CACHE_RETENTION; else process.env.OPENAI_PROMPT_CACHE_RETENTION = origRetention;
     }
   });
 }
@@ -2749,6 +2911,7 @@ async function postJSONSuite() {
   await textSuite();
   await loopSuite();
   await reflectSuite();
+  await planSuite();
   await backSuite();
   await memorySuite();
   await providerTranslationSuite();
