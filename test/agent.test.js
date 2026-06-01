@@ -1403,19 +1403,21 @@ async function promptSuite() {
       wait: registry.wait,
       take_screenshot: registry.take_screenshot,
       save_text: registry.save_text,
+      save_record: registry.save_record,
       done: registry.done,
     });
     assert.ok(prompt.includes('click[@e|@t]'), 'click ref types should be shown');
     assert.ok(prompt.includes('type[@e] (intent: string, text: string, clear: boolean?, submit: boolean?)'), 'required + optional args should be shown');
     assert.ok(prompt.includes('wait (intent: string, ms: number)'), 'wait args should be shown');
     assert.ok(prompt.includes('take_screenshot[@e|@t|@v] (ref: string?, intent: string)'), 'optional ref types should be shown');
-    assert.ok(prompt.includes('save_text (intent: string, content: string, summary: string, completeItem: boolean?)'), 'save_text should expose complete-item marker');
+    assert.ok(prompt.includes('save_text (intent: string, content: string, summary: string)'), 'save_text should remain evidence memory');
+    assert.ok(prompt.includes('save_record (intent: string, content: string, summary: string)'), 'save_record should expose final-record ledger op');
     assert.ok(prompt.includes('done (intent: string, result: string?)'), 'optional args should be marked');
-    assert.ok(prompt.includes('describing where this'), 'intent rule should be explicit');
-    assert.ok(prompt.includes('never pass punctuation, CSS selectors, words, or coordinates as ref'), 'screenshot refs should be hardened');
-    assert.ok(prompt.includes('save each complete item as its'), 'numeric quotas should get explicit bookkeeping guidance');
+    assert.ok(prompt.includes('20 words or fewer'), 'intent rule should be explicit');
+    assert.ok(prompt.includes('never punctuation, selectors, words, or coordinates'), 'screenshot refs should be hardened');
+    assert.ok(prompt.includes('For final deliverable records, use save_record'), 'record ledger guidance should be explicit');
     assert.ok(prompt.includes('Do not save intermediate report drafts'), 'operating rules should discourage draft-saving');
-    assert.ok(prompt.includes('Do not use save_text for intermediate answer drafts'), 'save_text should discourage drafts');
+    assert.ok(prompt.includes('Do not use save_text for final deliverable records'), 'save_text should not count final records');
   });
 
   await test('context is omitted (no header) when null/empty', () => {
@@ -2150,10 +2152,39 @@ async function planSuite() {
 
   // Every Step-0 / reflect / report call is tool-less; classify by a unique
   // marker in each one's system prompt so a run with several of them is legible.
-  const isPlanReq = (q) => (!q.tools || !q.tools.length) && /Reply with the plan only/.test(q.system || '');
+  const isPlanReq = (q) => (!q.tools || !q.tools.length) && /Reply with ONLY valid JSON/.test(q.system || '');
   const isReflectReq = (q) => (!q.tools || !q.tools.length) && /pausing mid-task to reflect/.test(q.system || '');
   const isReportReq = (q) => (!q.tools || !q.tools.length) && /You write final Markdown reports/.test(q.system || '');
   const isPlannerReq = (q) => q.tools && q.tools.length > 0;
+
+  await test('parsePlanResponse extracts plan prose and the record contract', () => {
+    const { parsePlanResponse } = require('../lib/planning');
+    const parsed = parsePlanResponse(JSON.stringify({
+      plan: 'Search official listings and save each complete job.',
+      recordContract: {
+        recordName: 'job',
+        target: 3,
+        requiredFields: {
+          company: 'Company name',
+          title: 'Role title',
+          url: 'Direct job URL',
+        },
+        optionalFields: ['salary'],
+      },
+    }));
+
+    assert.strictEqual(parsed.plan, 'Search official listings and save each complete job.');
+    assert.deepStrictEqual(parsed.recordContract, {
+      recordName: 'job',
+      target: 3,
+      requiredFields: {
+        company: 'Company name',
+        title: 'Role title',
+        url: 'Direct job URL',
+      },
+      optionalFields: { salary: 'salary' },
+    });
+  });
 
   await test('buildSystemPrompt: plan sits before context, context stays last', () => {
     const reg = { click: registry.click, done: registry.done };
@@ -2452,28 +2483,52 @@ async function memorySuite() {
     assert.ok(t2.length < 5000, 'preview should not dump the full saved note');
   });
 
-  await test('numeric item quotas are shown as progress and auto-complete at target', async () => {
-    const reqs = installFakeProvider([
-      [action('save_text', { args: { content: 'Acme — Head of Product', summary: 'Acme job', completeItem: true } })],
-      [action('save_text', { args: { content: 'Beta — Senior PM', summary: 'Beta job', completeItem: true } })],
-      [action('save_text', { args: { content: 'Cygnus — CPO', summary: 'Cygnus job', completeItem: true } })],
-      [action('click', { ref: '@e1' })],
-    ]);
+  await test('record contracts are shown as progress and auto-complete at target', async () => {
+    const contractPlan = JSON.stringify({
+      plan: 'Search job boards and save each complete job record.',
+      recordContract: {
+        recordName: 'job',
+        target: 3,
+        requiredFields: {
+          company: 'Company name',
+          title: 'Role title',
+          url: 'Direct job listing URL',
+          contacts: '1-3 people at the company with name and title',
+          dm: '2-3 sentence message',
+        },
+        optionalFields: {},
+      },
+    });
+    const reqs = installFakeProvider(
+      [
+        [action('save_record', { args: { content: 'Acme — Head of Product', summary: 'Acme job' } })],
+        [action('save_record', { args: { content: 'Beta — Senior PM', summary: 'Beta job' } })],
+        [action('save_record', { args: { content: 'Cygnus — CPO', summary: 'Cygnus job' } })],
+        [action('click', { ref: '@e1' })],
+      ],
+      [contractPlan],
+    );
     const session = makeFakeSession([makeBrief, makeBrief, makeBrief, makeBrief]);
-    const r = await run({ session, task: 'Find 3 solid jobs. For every job, list 1-3 contacts.', config: baseConfig() });
+    const r = await run({
+      session,
+      task: 'Find 3 solid jobs. For every job, list 1-3 contacts.',
+      config: baseConfig({ plan: { enabled: true } }),
+    });
 
     assert.strictEqual(r.status, 'completed', r.error);
-    assert.strictEqual(r.result, 'Collected requested 3 jobs.');
-    assert.deepStrictEqual(r.steps.map(s => s.action.verb), ['save_text', 'save_text', 'save_text']);
-    assert.strictEqual(r.itemQuota.completeItemCount, 3);
+    assert.strictEqual(r.result, 'Collected requested 3 job records.');
+    assert.deepStrictEqual(r.steps.map(s => s.action.verb), ['save_record', 'save_record', 'save_record']);
+    assert.strictEqual(r.records.length, 3);
+    assert.strictEqual(r.recordContract.recordName, 'job');
+    assert.strictEqual(r.recordContract.target, 3);
 
     const plannerReqs = reqs.filter(q => q.tools && q.tools.length);
     assert.strictEqual(plannerReqs.length, 3, 'loop should stop before the extra click turn');
-    assert.ok(plannerReqs[0].messages[0].content.includes('Requested final-item target: 3 jobs.'));
-    assert.ok(plannerReqs[0].messages[0].content.includes('Complete saved final items: 0/3.'));
-    assert.ok(plannerReqs[1].messages[0].content.includes('Complete saved final items: 1/3.'));
-    assert.ok(plannerReqs[2].messages[0].content.includes('Complete saved final items: 2/3.'));
-    assert.ok(plannerReqs[1].messages[0].content.includes('complete item 1/3'));
+    assert.ok(plannerReqs[0].messages[0].content.includes('Record target: 3 job records.'));
+    assert.ok(plannerReqs[0].messages[0].content.includes('Saved records: 0/3.'));
+    assert.ok(plannerReqs[1].messages[0].content.includes('Saved records: 1/3.'));
+    assert.ok(plannerReqs[2].messages[0].content.includes('Saved records: 2/3.'));
+    assert.ok(plannerReqs[1].messages[0].content.includes('record 1/3'));
   });
 
   await test('turn log includes the simplified LLM payload', async () => {
