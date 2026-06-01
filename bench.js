@@ -116,7 +116,7 @@ async function main() {
     process.exit(1);
   }
 
-  const providerLabel = `${config.provider}${config.model ? '/' + config.model : ''}`;
+  const providerLabel = `${config.models.primary.provider}${config.models.primary.model ? '/' + config.models.primary.model : ''}`;
   console.error(`browser-agent bench — ${tasks.length} task(s) · ${providerLabel} · executor: ${config.executor.backend}\n`);
 
   let session;

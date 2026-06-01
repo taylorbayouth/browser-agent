@@ -67,7 +67,7 @@ export interface Completion {
   elapsedMs: number;
 }
 
-/** Request handed to adapter.plan(). Built at lib/loop.js plan call site. */
+/** Request handed to adapter.callModel(). Built at the lib/loop.js callModel call site. */
 export interface PlanRequest {
   system: string;
   tools: ToolDef[];
@@ -122,6 +122,6 @@ export interface Adapter {
   readonly defaultModel: string;
   readonly defaultVisionModel?: string;
   readonly capabilities: Capabilities;
-  plan(req: PlanRequest): Promise<Completion>;
+  callModel(req: PlanRequest): Promise<Completion>;
   describe?(req: VisionRequest): Promise<VisionResult>;
 }

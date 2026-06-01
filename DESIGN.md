@@ -253,7 +253,7 @@ The LLM marks task completion by emitting `{ verb: "done", args: { result: "…"
 
 ### Final report
 
-At finish, the loop reads `runs/<id>/saved.md` if it fits `report.rawTokenBudget`; otherwise it reads `saved-index.md`. It hands that evidence, the original task, and optional trusted `context` to one no-tools report model call. That model writes `report.md` for the original task, so organization can vary with the assignment instead of being locked to a code template. The prompt tells it to think through the best layout for the specific task and evidence, preserve source URLs and relative `assets/` links, use only saved evidence, call out gaps instead of inventing missing facts, and avoid omitting saved records when raw evidence is available.
+At finish, the loop reads `runs/<id>/saved.md` if it fits `report.rawTokenBudget`; otherwise it reads `saved-index.md`. It hands that evidence, the original task, optional trusted `context`, and the run's **plan of action** (see *Step 0*) to one no-tools report model call — the plan lets the report honor the intended deliverable shape and flag anything the plan called for that the evidence is missing. That model writes `report.md` for the original task, so organization can vary with the assignment instead of being locked to a code template. The prompt tells it to think through the best layout for the specific task and evidence, preserve source URLs and relative `assets/` links, use only saved evidence, call out gaps instead of inventing missing facts, and avoid omitting saved records when raw evidence is available.
 
 When `saved-index.md` is used, `report.md` becomes summary-oriented rather than comprehensive; raw details remain in `saved.md`. If `report.enabled` is `false`, the report model is unavailable, or it returns no text, the loop writes a compact deterministic fallback report from the same selected evidence. `saved.md` and `saved-index.md` remain on disk either way. The same Markdown is also rendered to `report.html` with `markdown-it` plus a thin page wrapper for link targets, overflow-safe URLs, and optional report framing CSS.
 
@@ -359,6 +359,9 @@ DEFAULTS (lib/config.js)  <  browser-agent.config.json  <  env vars  <  CLI flag
 | `provider` | `openai` | LLM provider (also `BROWSER_AGENT_PROVIDER`). |
 | `model` | `null` | `null` → provider's own default. |
 | `context` | `null` | Optional trusted background (user info, prefs) appended to the system prompt (also `BROWSER_AGENT_CONTEXT`, `--context`/`-c`). `null` → no Context section. |
+| `plan.enabled` | `true` | Run one upfront *Step 0* call that writes a short plan of action, threaded into the planner, reflection, and report (see *Loop semantics § Step 0*). |
+| `plan.provider` | `openai` | Provider for the Step-0 planning call. Independent of the planner. |
+| `plan.model` | `gpt-5.5` | Model for the Step-0 planning call (a stronger model to think before acting). |
 | `loop.maxSteps` | `30` | Hard cap on LLM turns. |
 | `loop.shortCircuitOnNoChange` | `true` | Skip the LLM call while the page is byte-identical (see below). |
 | `loop.pollMs` | `1500` | Wait between re-checks while the page is unchanged. |
@@ -391,7 +394,7 @@ DEFAULTS (lib/config.js)  <  browser-agent.config.json  <  env vars  <  CLI flag
 
 ## CLI output contract
 
-`node agent.js` is designed for another process to call. Progress, preflight guidance, and turn status are written to stderr. Stdout is exactly one compact JSON object with `ok`, `status`, `runId`, `task`, optional trusted `context`, `result`, final report content, and absolute paths to `report.md`, `report.html`, `saved.md`, `saved-index.md`, `assets/`, and the run logs. Callers should parse stdout and use the paths directly instead of reconstructing run locations from cwd.
+`node agent.js` is designed for another process to call. Progress, preflight guidance, and turn status are written to stderr. Stdout is exactly one compact JSON object with `ok`, `status`, `runId`, `task`, optional trusted `context`, the run's `plan` of action (or `null`), `result`, final report content, and absolute paths to `report.md`, `report.html`, `saved.md`, `saved-index.md`, `assets/`, and the run logs. Callers should parse stdout and use the paths directly instead of reconstructing run locations from cwd.
 
 Exit codes are: `0` for `completed`, `1` for a run that executed but ended incomplete/failed, and `2` for usage/config/preflight errors.
 
@@ -431,6 +434,16 @@ Loop tracks consecutive scrolls with the same direction on the same page. Once `
 ## Loop semantics
 
 Loop is the only stateful module. Everything else is pure.
+
+### Step 0: plan of action (`lib/planning.js`)
+
+Before the loop begins, the loop makes one **planning call** (`models.plan`, default `gpt-5.5`/`high`, enabled). It turns the bare task into a short prose **plan of action** — how the agent intends to use the web, and what the finished report needs to contain — formed from the task and trusted `context` alone, **before any page is seen**. The plan is an *immutable north star*: it is generated once and threaded into three downstream prompts so every stage shares one reading of the task —
+
+- the **planner's** system prompt, on every turn (it rides inside the cached prefix — see *Prompt construction*),
+- each **reflection** turn (so reflection judges progress against the plan, not just the task), and
+- the final **report** (so the report's structure is pre-committed and the evidence was gathered *for* it).
+
+It is *not* a script: the live page is always ground truth, and mid-run re-routing is the job of reflection, not a rewrite of the plan. Because it is built only from trusted inputs (never page content), it carries no prompt-injection surface. A failure here never breaks the run — `runArtifact.plan` stays `null` and every consumer omits the (empty) block, so the run proceeds exactly as if Step 0 were disabled. The plan is recorded on the Run artifact and surfaced in the stdout handoff.
 
 ### The loop body
 
@@ -496,7 +509,7 @@ The known limitation: an event log captures actions, navigations, and errors, bu
 
 ### Reflection: the "moment of silence" (`lib/reflect.js`)
 
-The stuck/empty-plan aborts above are blunt: a flailing agent is killed rather than redirected. Reflection inserts a chance to recover *before* those aborts fire. When the loop detects the agent is flailing — `stuckStreak` or `emptyPlanStreak` hitting its threshold — or crosses a budget fraction (`reflect.budgetTurnFraction` of `maxSteps`, fired once), it runs one **reflection turn**: a Plan call with **no tools and no page listing**, handed only the task and a clip of the scratchpad (`saved.md`). Stripped of the live page, the model judges its own trajectory and returns a single `<15-word` decision — stay the course, or pivot in concrete action terms.
+The stuck/empty-plan aborts above are blunt: a flailing agent is killed rather than redirected. Reflection inserts a chance to recover *before* those aborts fire. When the loop detects the agent is flailing — `stuckStreak` or `emptyPlanStreak` hitting its threshold — or crosses a budget fraction (`reflect.budgetTurnFraction` of `maxSteps`, fired once), it runs one **reflection turn**: a Plan call with **no tools and no page listing**, handed the task, the run's plan of action (see *Step 0*), and a clip of the scratchpad (`saved.md`). Stripped of the live page, the model judges its own trajectory and returns a single `<15-word` decision — stay the course, or pivot in concrete action terms.
 
 - **Loop-triggered, not a verb.** The model deepest in a loop is the least likely to ask for a pause, so the loop fires it on the signals it already computes; it is not in the action registry.
 - **Its own model.** `reflect.provider`/`reflect.model` are independent of the planner (default `gpt-5.5`), so a cheap planner can pause to think on a stronger model. `null` falls back to the planner's provider/model.
@@ -520,7 +533,7 @@ module.exports = {
   defaultModel: 'claude-opus-4-7',
   defaultVisionModel: 'claude-opus-4-7',
   capabilities: { reasoningEffort: false, vision: true, toolUse: 'native', cache: 'explicit' },
-  async plan(req) { … },       // planning/tool-calling → Completion
+  async callModel(req) { … },  // one model call (tool-calling or prose) → Completion
   async describe(req) { … },   // single-shot vision (image in, prose out) → VisionResult
 };
 ```
@@ -544,7 +557,7 @@ name, and tests inject a fake adapter by direct assignment. Set
 
 ### Capability-aware dispatch
 
-`plan()` consults `adapter.capabilities` and strips request fields the adapter
+`callModel()` consults `adapter.capabilities` and strips request fields the adapter
 can't use — today, `reasoningEffort` for providers that don't support it —
 emitting a one-time warning instead of letting the field be silently ignored.
 
@@ -561,7 +574,7 @@ headers, not bodies.
 
 ### Selection & defaults
 
-Provider is resolved in this order: the `provider` arg to `plan()` / `run()` → `BROWSER_AGENT_PROVIDER` env → `DEFAULT_PROVIDER` (`'openai'`). Mirrors the executor selection pattern. The vision provider/model are configured independently under `config.vision` (see `lib/vision.js`, which owns prompt/normalization and dispatches through the registry).
+Provider is resolved in this order: the `provider` arg to `callModel()` / `run()` → `BROWSER_AGENT_PROVIDER` env → `DEFAULT_PROVIDER` (`'openai'`). Mirrors the executor selection pattern. The vision provider/model are configured independently under `config.vision` (see `lib/vision.js`, which owns prompt/normalization and dispatches through the registry).
 
 | Provider | Module | Default model | Vision model | Credentials | Caching |
 |---|---|---|---|---|---|
@@ -582,7 +595,7 @@ Generated once per Run from `actions.js`:
 …
 ```
 
-Each provider's `plan()` translates these generic tool defs into its native format (Anthropic `tool_use`, OpenAI / Ollama function calling, Gemini `functionDeclarations`). The rest of the engine doesn't care.
+Each provider's `callModel()` translates these generic tool defs into its native format (Anthropic `tool_use`, OpenAI / Ollama function calling, Gemini `functionDeclarations`). The rest of the engine doesn't care.
 
 ---
 
@@ -594,13 +607,13 @@ Each provider's `plan()` translates these generic tool defs into its native form
 const prompt = require('./prompt');
 const actions = require('./actions');
 
-const system = prompt.buildSystemPrompt(actions, config.context);
-// → "You are a browser agent. Available actions: …\n\nContext (trusted …): …"
+const system = prompt.buildSystemPrompt(actions, config.context, runArtifact.plan);
+// → "You are a browser agent. Available actions: …\n\nPlan of Action (…): …\n\nContext (trusted …): …"
 ```
 
-The system prompt is built once per Run, kept in `Run.system` (optional, for debugging), and sent as the first message of every Plan call.
+The system prompt is built once per Run — after *Step 0* produces the plan, so the plan rides inside it — and sent as the first message of every Plan call.
 
-**Optional context.** `config.context` (also `BROWSER_AGENT_CONTEXT` / `--context`) is operator-supplied background — who the user is, preferences — and is *authoritative*, unlike page text. It's appended as a labelled trusted block at the **very end** of the prompt, never spliced into the middle: the template + action list above it are byte-identical across runs and form the cacheable prefix (see *Caching seams*), so a per-run context value would invalidate the cache for everything after it if placed earlier. Keeping it last confines the variation to the tail. When `context` is null/empty the block — header included — is omitted entirely.
+**Optional context and plan.** Two authoritative per-run blocks are appended to the **tail**, after the byte-identical template + action list that form the cacheable prefix (see *Caching seams*) — placing them earlier would invalidate the cache for everything after them. `config.context` (also `BROWSER_AGENT_CONTEXT` / `--context`) is operator-supplied background — who the user is, preferences — and the **plan of action** is the agent's own Step-0 plan for this run. The plan sits *before* context so `context` remains the very last block (nothing cacheable follows it). Each block — header included — is omitted entirely when its value is null/empty, so a disabled/failed Step 0 or absent context changes nothing.
 
 ---
 
