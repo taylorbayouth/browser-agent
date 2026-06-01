@@ -142,7 +142,10 @@ function buildHandoff(runArtifact, config = {}) {
     context,
     mode: runArtifact.mode ?? config.mode ?? null,
     taskType: runArtifact.taskType ?? null,
-    plan: runArtifact.plan ?? null,
+    expandedTask: runArtifact.expandedTask ?? null,
+    requirements: runArtifact.requirements ?? [],
+    recordContract: runArtifact.recordContract ?? null,
+    recordCount: (runArtifact.records || []).length,
     result: runArtifact.result ?? null,
     report: {
       markdown: runArtifact.report ?? null,
