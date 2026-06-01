@@ -13,7 +13,7 @@ const { reduce, computeBriefHash } = require('../lib/reduce');
 const { validate } = require('../lib/validate');
 const registry = require('../lib/actions');
 const { createExecutor } = require('../lib/execute');
-const planMod = require('../lib/plan');
+const modelMod = require('../lib/model');
 const { run } = require('../lib/loop');
 const { loadConfig, deepMerge, DEFAULTS, ConfigError } = require('../lib/config');
 const { createLogger } = require('../lib/log');
@@ -99,7 +99,7 @@ function installFakeProvider(turns, reflectTurns = []) {
   let i = 0;   // action-queue cursor (tooled planning turns)
   let r = 0;   // reflect-queue cursor (no-tools reflection turns)
   const requests = [];
-  planMod.providers.fake = {
+  modelMod.providers.fake = {
     name: 'fake',
     defaultModel: 'fake-1',
     async callModel(req) {
@@ -2522,7 +2522,7 @@ async function providerTranslationSuite() {
   });
 
   await test('toolsFromRegistry exposes optional screenshot ref', () => {
-    const [tool] = planMod.toolsFromRegistry({ take_screenshot: registry.take_screenshot });
+    const [tool] = modelMod.toolsFromRegistry({ take_screenshot: registry.take_screenshot });
     assert.deepStrictEqual(tool.inputSchema, { ref: 'string?', intent: 'string', hint: 'string?' });
     const schema = buildJsonSchema(tool.inputSchema);
     assert.deepStrictEqual(schema.required, ['intent']);
@@ -2670,7 +2670,7 @@ async function geminiSuite() {
 async function visionDispatchSuite() {
   console.log('\nvision dispatch (unified describe):');
   const visionMod = require('../lib/vision');
-  const { providers } = require('../lib/plan');
+  const { providers } = require('../lib/model');
 
   await test('every built-in provider advertises vision + describe()', () => {
     // Built-ins only — an earlier suite injects a partial `fake` adapter into the

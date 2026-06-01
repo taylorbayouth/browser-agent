@@ -31,7 +31,7 @@ This document captures the architecture, contracts, and conventions for the broa
 | Connect | port, target hints | `Session` | [lib/connect.js](lib/connect.js) | exists |
 | Extract | `Session`, opts | `Brief` | [lib/extract.js](lib/extract.js) | exists |
 | Reduce | `Brief`, history | `LLMView` | `lib/reduce.js` | exists |
-| Plan | `LLMView`, goal, tools | `Completion` (→ `Action[]`) | `lib/plan.js` + `lib/providers/*` | exists |
+| Plan | `LLMView`, goal, tools | `Completion` (→ `Action[]`) | `lib/model.js` + `lib/providers/*` | exists |
 | Validate | `Action[]`, `Brief.lookup` | checked `Action[]` or errors | `lib/validate.js` | exists |
 | Execute | `Action[]`, `Session` | `Observation[]` | `lib/execute.js` + `lib/executors/*` | exists |
 | Loop | task, session | `Run` | `lib/loop.js` | exists |
@@ -390,6 +390,8 @@ DEFAULTS (lib/config.js)  <  browser-agent.config.json  <  env vars  <  CLI flag
 | `log.enabled` | `true` | Write per-run JSONL and latest run artifacts. |
 | `log.dir` | `logs` | Directory for run logs, resolved relative to the current working directory. |
 
+**Model roles and inheritance.** There are five model roles — `plan` (*Step 0*), `primary` (the planner), `vision`, `reflect`, and `report` — each with its own `provider`, `model`, and per-request `timeoutMs`. `primary` is the base; every other role inherits `provider`/`model` from it wherever it leaves them unset, so a config that fills in only `primary` still drives all five. The inheritance rule lives in one place — `resolveRole(cfg, role)` in `lib/config.js` — which every call site (plan/reflect/report and the startup banner) goes through, so the roles can't drift apart. `loadConfig()` also runs a non-fatal `validateModels()` pass over the file's `models` block: an unknown role name (`reflct:`), a misplaced or misspelled field, or an obviously-wrong value type each draws a one-line stderr warning rather than being silently folded into DEFAULTS and disabling a role by accident.
+
 ---
 
 ## CLI output contract
@@ -462,7 +464,7 @@ It is *not* a script: the live page is always ground truth, and mid-run re-routi
 
 ### Memory: event log, not transcript
 
-The model is stateless across Plan calls, so each turn must carry the agent's progress. The naive approach — replay the full transcript (every past `LLMView` snapshot + each `tool_use`/`tool_result`) — grows **quadratically**: turn *N* re-sends *N* snapshots, so a 30-step run bills ~N²/2 listings.
+The model is stateless across model calls, so each turn must carry the agent's progress. The naive approach — replay the full transcript (every past `LLMView` snapshot + each `tool_use`/`tool_result`) — grows **quadratically**: turn *N* re-sends *N* snapshots, so a 30-step run bills ~N²/2 listings.
 
 Instead, Loop keeps a compact, deterministic **event log** of what *happened* and rebuilds a single user message each turn from `[ task, event log, current page ]`:
 
@@ -482,7 +484,7 @@ Current page (1280x800) — the [@e…] refs below are valid only for this snaps
 Choose the single best next action, or emit "done" when the task is complete.
 ```
 
-Each Plan call is therefore just `{ system, tools, messages: [ <one user message> ] }`:
+Each model call is therefore just `{ system, tools, messages: [ <one user message> ] }`:
 
 - **Linear, not quadratic.** Only the current page is ever shown in full; old snapshots collapse to one event line each. The system prompt + tool defs remain the stable, cacheable prefix.
 - **Provider-agnostic with no pairing.** Because no `tool_use`/`tool_result` blocks are replayed, there is no `tool_use_id` to thread and no role-alternation constraint — every provider gets a single user turn.
@@ -509,7 +511,7 @@ The known limitation: an event log captures actions, navigations, and errors, bu
 
 ### Reflection: the "moment of silence" (`lib/reflect.js`)
 
-The stuck/empty-plan aborts above are blunt: a flailing agent is killed rather than redirected. Reflection inserts a chance to recover *before* those aborts fire. When the loop detects the agent is flailing — `stuckStreak` or `emptyPlanStreak` hitting its threshold — or crosses a budget fraction (`reflect.budgetTurnFraction` of `maxSteps`, fired once), it runs one **reflection turn**: a Plan call with **no tools and no page listing**, handed the task, the run's plan of action (see *Step 0*), and a clip of the scratchpad (`saved.md`). Stripped of the live page, the model judges its own trajectory and returns a single `<15-word` decision — stay the course, or pivot in concrete action terms.
+The stuck/empty-plan aborts above are blunt: a flailing agent is killed rather than redirected. Reflection inserts a chance to recover *before* those aborts fire. When the loop detects the agent is flailing — `stuckStreak` or `emptyPlanStreak` hitting its threshold — or crosses a budget fraction (`reflect.budgetTurnFraction` of `maxSteps`, fired once), it runs one **reflection turn**: a model call with **no tools and no page listing**, handed the task, the run's plan of action (see *Step 0*), and a clip of the scratchpad (`saved.md`). Stripped of the live page, the model judges its own trajectory and returns a single `<15-word` decision — stay the course, or pivot in concrete action terms.
 
 - **Loop-triggered, not a verb.** The model deepest in a loop is the least likely to ask for a pause, so the loop fires it on the signals it already computes; it is not in the action registry.
 - **Its own model.** `reflect.provider`/`reflect.model` are independent of the planner (default `gpt-5.5`), so a cheap planner can pause to think on a stronger model. `null` falls back to the planner's provider/model.
@@ -551,7 +553,7 @@ provider returns the same shape and the loop stays provider-agnostic.
 Adapters self-register in `lib/providers/index.js` via `register()`, which
 shape-checks each adapter against the contract at load time (a clear error beats
 a deep runtime throw; the `vision: true` capability requires a `describe()`).
-The registry is a mutable object keyed by name — `plan.js` looks adapters up by
+The registry is a mutable object keyed by name — `model.js` looks adapters up by
 name, and tests inject a fake adapter by direct assignment. Set
 `BROWSER_AGENT_SKIP_ADAPTER_CHECK=1` to bypass the guard.
 
@@ -574,7 +576,7 @@ headers, not bodies.
 
 ### Selection & defaults
 
-Provider is resolved in this order: the `provider` arg to `callModel()` / `run()` → `BROWSER_AGENT_PROVIDER` env → `DEFAULT_PROVIDER` (`'openai'`). Mirrors the executor selection pattern. The vision provider/model are configured independently under `config.vision` (see `lib/vision.js`, which owns prompt/normalization and dispatches through the registry).
+Provider is resolved in this order: the `provider` arg to `callModel()` / `run()` → `BROWSER_AGENT_PROVIDER` env → `DEFAULT_PROVIDER` (`'openai'`). Mirrors the executor selection pattern. The vision provider/model are configured independently under `config.models.vision` (see `lib/vision.js`, which owns prompt/normalization and dispatches through the registry).
 
 | Provider | Module | Default model | Vision model | Credentials | Caching |
 |---|---|---|---|---|---|
@@ -611,7 +613,7 @@ const system = prompt.buildSystemPrompt(actions, config.context, runArtifact.pla
 // → "You are a browser agent. Available actions: …\n\nPlan of Action (…): …\n\nContext (trusted …): …"
 ```
 
-The system prompt is built once per Run — after *Step 0* produces the plan, so the plan rides inside it — and sent as the first message of every Plan call.
+The system prompt is built once per Run — after *Step 0* produces the plan, so the plan rides inside it — and sent as the first message of every model call.
 
 **Optional context and plan.** Two authoritative per-run blocks are appended to the **tail**, after the byte-identical template + action list that form the cacheable prefix (see *Caching seams*) — placing them earlier would invalidate the cache for everything after them. `config.context` (also `BROWSER_AGENT_CONTEXT` / `--context`) is operator-supplied background — who the user is, preferences — and the **plan of action** is the agent's own Step-0 plan for this run. The plan sits *before* context so `context` remains the very last block (nothing cacheable follows it). Each block — header included — is omitted entirely when its value is null/empty, so a disabled/failed Step 0 or absent context changes nothing.
 
@@ -635,7 +637,7 @@ Hits surface as `usage.prompt_tokens_details.cached_tokens`.
 
 | Seam | Where | What would be cached |
 |---|---|---|
-| Brief diff | `loop.js` | `briefHash` comparison: if a new Brief has the same hash as the previous one, optionally skip the Plan call entirely. (Partially realized: the no-change short-circuit polls instead of re-prompting.) |
+| Brief diff | `loop.js` | `briefHash` comparison: if a new Brief has the same hash as the previous one, optionally skip the model call entirely. (Partially realized: the no-change short-circuit polls instead of re-prompting.) |
 | Element resolution | `lib/execute.js` | `backendNodeId → nodeId` (from `DOM.requestNode`). Lifetime: one Brief. Invalidated on re-snapshot. |
 | LLMView | `reduce.js` | `briefHash → LLMView` map. Trivial — Reduce is pure. |
 
@@ -652,7 +654,7 @@ Three verbs, happy path, one provider. Goal: get a real brief through a real LLM
 1. `actions.js` — `click`, `type`, `done` only.
 2. `prompt.js` — system prompt template + vocab generator.
 3. `reduce.js` — deterministic listing of `elements` only.
-4. `providers/anthropic.js` + `plan.js` — tool-use mode, no caching yet.
+4. `providers/anthropic.js` + `model.js` — tool-use mode, no caching yet.
 5. `validate.js` — regex, lookup membership, refType, args shape.
 6. `session.settle()` + `execute.js` — universal settle; dispatch three verbs via CDP.
 7. `loop.js` — orchestrator, message conversion, Run construction, max-steps guard.

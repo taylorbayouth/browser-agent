@@ -4,7 +4,7 @@
 // so editors and an optional `tsc --checkJs` pass can verify that each provider
 // in lib/providers/*.js conforms to the same contract. Every shape here mirrors
 // a runtime shape that already exists in the code (see _shared.js buildCompletion,
-// plan.js toolsFromRegistry, loop.js plan call site) — this file names them, it
+// model.js toolsFromRegistry, loop.js callModel call site) — this file names them, it
 // does not change them.
 //
 // See docs/model-adapters-spec.md § 3 and DESIGN.md § Providers.
@@ -12,7 +12,7 @@
 /** OpenAI reasoning effort. Only the OpenAI Responses path consumes this today. */
 export type ReasoningEffort = 'minimal' | 'low' | 'medium' | 'high';
 
-/** A single tool definition as produced by plan.js toolsFromRegistry(). */
+/** A single tool definition as produced by model.js toolsFromRegistry(). */
 export interface ToolDef {
   name: string;
   description: string;
@@ -68,7 +68,7 @@ export interface Completion {
 }
 
 /** Request handed to adapter.callModel(). Built at the lib/loop.js callModel call site. */
-export interface PlanRequest {
+export interface ModelRequest {
   system: string;
   tools: ToolDef[];
   messages: Message[];
@@ -106,7 +106,7 @@ export interface VisionResult {
  *  request fields are meaningful (e.g. strip reasoningEffort when false) instead
  *  of letting them be silently dropped. */
 export interface Capabilities {
-  /** Honors PlanRequest.reasoningEffort (OpenAI Responses path only, today). */
+  /** Honors ModelRequest.reasoningEffort (OpenAI Responses path only, today). */
   reasoningEffort: boolean;
   /** Implements describe() for image input. */
   vision: boolean;
@@ -122,6 +122,6 @@ export interface Adapter {
   readonly defaultModel: string;
   readonly defaultVisionModel?: string;
   readonly capabilities: Capabilities;
-  callModel(req: PlanRequest): Promise<Completion>;
+  callModel(req: ModelRequest): Promise<Completion>;
   describe?(req: VisionRequest): Promise<VisionResult>;
 }
