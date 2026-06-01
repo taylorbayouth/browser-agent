@@ -244,7 +244,7 @@ async function reduceSuite() {
     assert.notStrictEqual(computeBriefHash(a), computeBriefHash(renamed), 'name change busts hash');
   });
 
-  await test('renders visuals in reading order with a @v ref to screenshot', () => {
+  await test('renders visuals in reading order with a @v ref', () => {
     const brief = makeBrief({
       elements: [],
       text: [{ ref: '@t1', role: 'heading', name: 'Sales', bbox: [0, 10, 100, 20] }],
@@ -267,7 +267,7 @@ async function reduceSuite() {
     });
     const region = reduce(brief, { includeText: true }).listing.split('\n').find(l => l.includes('[@v1]'));
     assert.ok(region.includes('"Acme logo"'), 'shows the visual label');
-    assert.ok(region.includes('take_screenshot @v1 to capture'), 'named visual is captured to SHOW it');
+    assert.ok(region.includes('save_image @v1 to capture'), 'named visual is saved to SHOW it');
     assert.ok(!region.includes('unreadable'), 'a named visual is not marked unreadable');
   });
 
@@ -490,7 +490,7 @@ async function regionSuite() {
 
 async function screenshotSuite() {
   console.log('\nscreenshot (crop):');
-  const { screenshot } = require('../lib/screenshot');
+  const { screenshot, saveImage } = require('../lib/screenshot');
   const visionMod = require('../lib/vision');
   const origDescribe = visionMod.describe;
   visionMod.describe = async () => ({ summary: 'short view', description: 'a description' });   // no network/LLM in unit tests
@@ -507,6 +507,7 @@ async function screenshotSuite() {
       assert.strictEqual(s.calls[0].clip, undefined, 'no clip param');
       assert.strictEqual(s.calls[0].captureBeyondViewport, undefined);
       assert.strictEqual(out.cropped, false);
+      assert.strictEqual(out.image, undefined, 'take_screenshot does not return persistable bytes');
     });
 
     await test('region ref → clip from its bbox, captureBeyondViewport on (off-screen ok)', async () => {
@@ -546,6 +547,13 @@ async function screenshotSuite() {
       assert.ok(s2.calls[0].quality > s1.calls[0].quality, 'cropped read encoded at higher quality than a full-page describe');
       assert.strictEqual(out1.mimeType, 'image/jpeg');
       assert.strictEqual(out1.ext, 'jpg');
+    });
+
+    await test('save_image returns bytes for report promotion', async () => {
+      const s = fakeSession();
+      const out = await saveImage({ session: s, brief: makeBrief(), ref: '@e1' });
+      assert.strictEqual(out.image, 'BASE64PNG');
+      assert.deepStrictEqual(s.calls[0].clip, { x: 100, y: 200, width: 300, height: 40, scale: 1 });
     });
   } finally {
     visionMod.describe = origDescribe;
@@ -629,7 +637,7 @@ async function visualEvidenceSuite() {
       await createVisualEvidence({ enabled: true, maxRegions: 8 }).enrich({ session, brief });
       const listing = reduce(brief, { includeText: true, includeCoords: false }).listing;
       assert.ok(listing.includes('vision: "A revenue line chart rising across four quarters."'), 'visual description is in the @v line');
-      assert.ok(listing.includes('take_screenshot @v1 to save image'), 'reference image hint is shown');
+      assert.ok(listing.includes('save_image @v1 to save image'), 'reference image hint is shown');
       assert.ok(listing.includes('[@t1]') && listing.includes('Q1 $10 Q2 $20'), 'OCR text is exposed as @t');
       assert.strictEqual(brief.text[0].derived, 'vision');
       assert.strictEqual(brief.text[0].sourceRef, '@v1');
@@ -676,7 +684,7 @@ async function visualEvidenceSuite() {
       }
     });
 
-    await test('explicit take_screenshot persists cached crop and description', async () => {
+    await test('explicit save_image persists cached crop and description', async () => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ba-visual-promote-'));
       try {
         const captureCalls = [];
@@ -692,7 +700,7 @@ async function visualEvidenceSuite() {
           return { summary: 'fresh', description: 'fresh describe should not be used' };
         };
         installFakeProvider([
-          [action('take_screenshot', { ref: '@v1' })],
+          [action('save_image', { ref: '@v1' })],
           [action('done', { args: {} })],
         ]);
         const session = sessionFor(regionBrief, captureCalls);
@@ -705,8 +713,8 @@ async function visualEvidenceSuite() {
           }),
         });
         assert.strictEqual(r.status, 'completed', r.error);
-        assert.strictEqual(captureCalls.length, 1, 'take_screenshot reused the enrichment crop');
-        assert.strictEqual(describeCalls, 0, 'take_screenshot reused the enrichment description');
+        assert.strictEqual(captureCalls.length, 1, 'save_image reused the enrichment crop');
+        assert.strictEqual(describeCalls, 0, 'save_image reused the enrichment description');
         const savedPath = r.steps[0].observation.detail.savedPath;
         assert.ok(savedPath && fs.existsSync(savedPath), 'promoted image persisted');
         assert.strictEqual(fs.readFileSync(savedPath, 'utf8'), 'crop bytes');
@@ -878,13 +886,24 @@ async function validateSuite() {
     assert.strictEqual(ok.length, 1, 'no ref is valid — full-viewport capture');
   });
 
+  await test('save_image: requires a visible ref and accepts @e/@t/@v', () => {
+    const lookup = { '@e1': 111, '@t1': 222, '@v1': 333 };
+    for (const ref of ['@e1', '@t1', '@v1']) {
+      const { ok, errors } = validate([action('save_image', { ref })], lookup, registry);
+      assert.strictEqual(ok.length, 1, `${ref} accepted: ${JSON.stringify(errors)}`);
+    }
+    const { ok, errors } = validate([action('save_image')], lookup, registry);
+    assert.strictEqual(ok.length, 0);
+    assert.match(errors[0].error, /requires a ref/);
+  });
+
   await test('take_screenshot: a present-but-unknown ref is rejected', () => {
     const { ok, errors } = validate([action('take_screenshot', { ref: '@v9' })], { '@v1': 333 }, registry);
     assert.strictEqual(ok.length, 0);
     assert.match(errors[0].error, /not present in current snapshot/);
   });
 
-  await test('only take_screenshot accepts a @v ref; click/select_text reject it', () => {
+  await test('only visual actions accept a @v ref; click/select_text reject it', () => {
     const lookup = { '@v1': 333 };
     for (const verb of ['click', 'select_text']) {
       const { ok, errors } = validate([action(verb, { ref: '@v1' })], lookup, registry);
@@ -1711,6 +1730,7 @@ async function promptSuite() {
       type: registry.type,
       wait: registry.wait,
       take_screenshot: registry.take_screenshot,
+      save_image: registry.save_image,
       save_text: registry.save_text,
       save_record: registry.save_record,
       done: registry.done,
@@ -1719,12 +1739,14 @@ async function promptSuite() {
     assert.ok(prompt.includes('type[@e] (intent: string, text: string, clear: boolean?, submit: boolean?)'), 'required + optional args should be shown');
     assert.ok(prompt.includes('wait (intent: string, ms: number)'), 'wait args should be shown');
     assert.ok(prompt.includes('take_screenshot[@e|@t|@v] (ref: string?, intent: string)'), 'optional ref types should be shown');
+    assert.ok(prompt.includes('save_image[@e|@t|@v] (intent: string)'), 'save_image should require a ref');
     assert.ok(prompt.includes('save_text (intent: string, content: string, summary: string)'), 'save_text should remain evidence memory');
     assert.ok(prompt.includes('save_record (intent: string, content: string, summary: string)'), 'save_record should expose final-record ledger op');
     assert.ok(prompt.includes('done (intent: string, result: string?)'), 'optional args should be marked');
     assert.ok(prompt.includes('20 words or fewer'), 'intent rule should be explicit');
     assert.ok(prompt.includes('never punctuation, selectors, words, or coordinates'), 'screenshot refs should be hardened');
     assert.ok(prompt.includes('For final deliverable records, use save_record'), 'record ledger guidance should be explicit');
+    assert.ok(prompt.includes('URL/prose records are not enough'), 'image deliverables must require actual assets');
     assert.ok(prompt.includes('Do not save intermediate report drafts'), 'operating rules should discourage draft-saving');
     assert.ok(prompt.includes('Do not use save_text for final deliverable records'), 'save_text should not count final records');
   });

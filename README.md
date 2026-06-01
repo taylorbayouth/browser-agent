@@ -25,7 +25,7 @@ The model gets the page like this:
 [@t18]  StaticText  "The library for web and native user interfaces."
 [@t23]  StaticText  "230,000"
 [@t24]  StaticText  "174 stars today"
-[@v2]   image       640x320 - vision: "A product photo on a white background"; take_screenshot @v2 to save image
+[@v2]   image       640x320 - vision: "A product photo on a white background"; save_image @v2 to save image
 ```
 
 Then it acts on refs. Click `@e14`. Save `@v2` if the image belongs in the report. Save the PDF. Finish with a
@@ -78,7 +78,7 @@ Browser Agent is fast because it does less.
 - **No-change polling**: if the page has not changed, it waits and rechecks
   instead of burning another LLM call.
 - **Targeted vision**: a bounded pre-brief pass can read opaque `@v` regions;
-  explicit screenshots are still the action that promotes visuals into reports.
+  explicit save_image actions still promote visuals into reports.
 
 That is why Browser Agent is designed to be one of the most token-efficient browser
 agents you can run.
