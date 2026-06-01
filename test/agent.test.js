@@ -14,7 +14,7 @@ const { validate } = require('../lib/validate');
 const registry = require('../lib/actions');
 const { createExecutor } = require('../lib/execute');
 const modelMod = require('../lib/model');
-const { run } = require('../lib/loop');
+const { run, stuckSignal } = require('../lib/loop');
 const { loadConfig, deepMerge, DEFAULTS, ConfigError } = require('../lib/config');
 const { createLogger } = require('../lib/log');
 const { estimateTokens } = require('../lib/tokens');
@@ -1594,6 +1594,71 @@ async function textSuite() {
       cleanWebText('# Heading\n\n- **One** [link](https://example.test)\n- `Two`\n\n> Quote'),
       'Heading\nOne link\nTwo\n\nQuote',
     );
+  });
+}
+
+async function stuckSignalSuite() {
+  console.log('\nstuckSignal:');
+
+  // Baseline that trips nothing — each case below flips only the fields it needs.
+  const clear = {
+    changed: true, primaryKey: null, primaryReadKey: null, primaryVerb: null,
+    lastActionKey: null, lastReadKey: null, lastActionBriefHash: null,
+    lastErroredKey: null, briefHash: 'h1',
+  };
+
+  await test('clear turn trips nothing', () => {
+    const r = stuckSignal({ ...clear });
+    assert.strictEqual(r.tripped, false);
+    assert.strictEqual(r.shape, null);
+  });
+
+  await test('sameAction: same key + page unchanged trips', () => {
+    const r = stuckSignal({ ...clear, changed: false, primaryKey: 'click|X', lastActionKey: 'click|X' });
+    assert.deepStrictEqual(r, { tripped: true, shape: 'sameAction' });
+  });
+
+  await test('sameAction does NOT trip when the page changed', () => {
+    const r = stuckSignal({ ...clear, changed: true, primaryKey: 'click|X', lastActionKey: 'click|X' });
+    assert.strictEqual(r.tripped, false);
+  });
+
+  await test('repeatedRead: same read key on an identical brief hash trips (changed=true)', () => {
+    const r = stuckSignal({
+      ...clear, changed: true,
+      primaryReadKey: 'take_screenshot|viewport', lastReadKey: 'take_screenshot|viewport',
+      lastActionBriefHash: 'h1', briefHash: 'h1',
+    });
+    assert.deepStrictEqual(r, { tripped: true, shape: 'repeatedRead' });
+  });
+
+  await test('repeatedRead does NOT trip when the brief hash differs', () => {
+    const r = stuckSignal({
+      ...clear, primaryReadKey: 'take_screenshot|viewport', lastReadKey: 'take_screenshot|viewport',
+      lastActionBriefHash: 'h1', briefHash: 'h2',
+    });
+    assert.strictEqual(r.tripped, false);
+  });
+
+  await test('sameErroredTarget: re-planning the errored key trips regardless of changed', () => {
+    const r = stuckSignal({ ...clear, changed: true, primaryKey: 'click|Y', lastErroredKey: 'click|Y' });
+    assert.deepStrictEqual(r, { tripped: true, shape: 'sameErroredTarget' });
+  });
+
+  await test('sameTypeRepeat: identical type trips even when the page changed', () => {
+    const r = stuckSignal({ ...clear, changed: true, primaryVerb: 'type', primaryKey: 'type|@e1|hi', lastActionKey: 'type|@e1|hi' });
+    assert.deepStrictEqual(r, { tripped: true, shape: 'sameTypeRepeat' });
+  });
+
+  await test('a repeated non-type click with a changed page is NOT stuck (Load more case)', () => {
+    const r = stuckSignal({ ...clear, changed: true, primaryVerb: 'click', primaryKey: 'click|more', lastActionKey: 'click|more' });
+    assert.strictEqual(r.tripped, false);
+  });
+
+  await test('first-match-wins ordering: sameAction reported before others', () => {
+    // A key that matches both lastActionKey (page unchanged) and lastErroredKey.
+    const r = stuckSignal({ ...clear, changed: false, primaryKey: 'click|Z', lastActionKey: 'click|Z', lastErroredKey: 'click|Z' });
+    assert.strictEqual(r.shape, 'sameAction');
   });
 }
 
@@ -3415,6 +3480,7 @@ async function connectionErrorSuite() {
   await promptSuite();
   await tokenSuite();
   await textSuite();
+  await stuckSignalSuite();
   await loopSuite();
   await reflectSuite();
   await planSuite();
