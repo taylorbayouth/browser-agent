@@ -246,7 +246,7 @@ Rules:
 | `selectText` | Highlight a node's full text | Targets `@e` or `@t`. Click-drag from the node's top-left to bottom-right corner (selects whole node, not a sub-phrase). |
 | `scroll` | Scroll the page | `direction: "up"|"down"`, optional `amount` in CSS pixels (default: one viewport). |
 | `navigate` | Load a new URL | Causes a full re-snapshot; refs from prior briefs are invalidated. |
-| `take_screenshot` | Capture a visual, save it, and have a vision model describe it | Top-level, `changesPage:false`, `idempotentRead`. The one capture verb: unreadable graphics (charts, canvas, CAPTCHA, cross-origin iframe) *and* report-worthy imagery (logos, photos, product shots). Crop-first — an optional `@v`/`@e`/`@t` ref clips to that node's bbox; no ref captures the viewport. `intent` is the saved caption. Backend-agnostic (CDP `Page.captureScreenshot`). Bytes → `runs/<id>/assets/`; saved path + description ride back as Observation detail. See `lib/vision.js` + `vision` config. |
+| `take_screenshot` | Promote a visual into report assets | Top-level, `changesPage:false`, `idempotentRead`. Use when the visual itself belongs in the final report. Crop-first — an optional `@v`/`@e`/`@t` ref clips to that node's bbox; no ref captures the viewport. For pre-enriched `@v` regions, reuses the transient crop/description; for URL-backed visuals, tries original loaded bytes before falling back to the crop. `intent` is the saved caption. Bytes → `runs/<id>/assets/`; saved path + description ride back as Observation detail. See `lib/screenshot.js` + `lib/visual-evidence.js`. |
 | `get_files` | List downloadable file links (PDFs, docs, archives) | Top-level, `changesPage:false`, `idempotentRead`. Scans the DOM (`DOM.querySelectorAll`/`getAttributes`, no page JS) for `<a href>`/`<embed>`/`<object>`/`<iframe>` whose target looks like a file (extension or `download` attr). The list rides back as Observation detail; the model passes a chosen URL to `save_file`. See `lib/media.js`. |
 | `save_text` | Save model-authored evidence/notes to the run | Top-level, `changesPage:false`. Loop-level (special-cased in `execute.js`, no backend, no extra LLM call). `content` is appended to `runs/<id>/saved.md`; a 30-word row is appended to `saved-index.md`; only the model's `summary` re-enters the event log. Evidence saves do **not** count toward final-record completion. |
 | `save_record` | Save one complete final deliverable record | Top-level, `changesPage:false`. Loop-level, no backend. `content` is appended to `saved.md` as a final record and indexed as type `record`. Each successful `save_record` increments the record ledger. In `records` task type only, when the Step-0 record contract target is reached, the loop completes instead of continuing to `maxSteps`. |
@@ -387,10 +387,12 @@ DEFAULTS (lib/config.js)  <  browser-agent.config.json  <  env vars  <  CLI flag
 | `executor.userIdleMs` | `600` | OS backend: how long the human must be idle before input resumes. |
 | `executor.raiseChromeOnStart` | `true` | OS backend: preflight foregrounds the agent's Chrome (PID-targeted) so the frontmost-gate is satisfied without manual clicking. |
 | `executor.humanize.*` | — | OS-backend motion/timing knobs (see Executor backends). |
-| `vision.provider` | `openai` | Vision model provider for the image-summary path (`take_screenshot`, and `save_file` on images) — `openai`/`anthropic`/`gemini`/`ollama`. Independent of the planner `provider`. |
+| `vision.provider` | `openai` | Vision model provider for visual evidence, `take_screenshot`, and `save_file` on images — `openai`/`anthropic`/`gemini`/`ollama`. Independent of the planner `provider`. |
 | `vision.model` | `null` | `null` → a multimodal default for the chosen provider. |
-| `vision.prompt` | `"Describe what you see…"` | Fully static base prompt sent with the image — no per-call steer, so the model describes it unbiased. |
+| `vision.prompt` | `"Describe what you see…"` | Static base prompt for explicit screenshot/save_file descriptions. Visual evidence uses its own fixed JSON prompt. |
 | `vision.maxTokens` | `1024` | Output cap for the vision call. |
+| `visualEvidence.enabled` | `true` | Run the transient pre-brief vision pass over selected `@v` regions. |
+| `visualEvidence.maxRegions` | `8` | Maximum `@v` crops analyzed before each planner turn. Prioritizes unnamed/opaque regions, then largest named/background visuals. |
 | `report.enabled` | `true` | Run one final no-tools LLM call that turns saved evidence into task-specific `report.md`. |
 | `report.provider` | `openai` | Provider for final report synthesis. |
 | `report.model` | `gpt-5.5` | Model for final report synthesis. |

@@ -13,8 +13,8 @@ Most browser agents still choose one of three bad shapes:
 Browser Agent takes the fourth path.
 
 It drives the Chrome binary you already have, reads the fully rendered page, and
-rebuilds a compact agent-native map: controls, text, unreadable visual regions,
-state, coordinates, and scroll context. Not the raw DOM. Not a screenshot loop.
+rebuilds a compact agent-native map: controls, text, visual evidence, state,
+coordinates, and scroll context. Not the raw DOM. Not a screenshot loop.
 A small "toy DOM" made for reasoning and action.
 
 The model gets the page like this:
@@ -25,10 +25,10 @@ The model gets the page like this:
 [@t18]  StaticText  "The library for web and native user interfaces."
 [@t23]  StaticText  "230,000"
 [@t24]  StaticText  "174 stars today"
-[@r2]   image       640x320 - unreadable; take_screenshot @r2 to read
+[@v2]   image       640x320 - vision: "A product photo on a white background"; take_screenshot @v2 to save image
 ```
 
-Then it acts on refs. Click `@e14`. Read `@r2`. Save the PDF. Finish with a
+Then it acts on refs. Click `@e14`. Save `@v2` if the image belongs in the report. Save the PDF. Finish with a
 task-specific Markdown report synthesized from saved evidence, plus an HTML copy.
 
 No Playwright. No Puppeteer. No cloned browser runtime. No screenshot tax unless
@@ -77,8 +77,8 @@ Browser Agent is fast because it does less.
   cache percentage as the run warms.
 - **No-change polling**: if the page has not changed, it waits and rechecks
   instead of burning another LLM call.
-- **Targeted vision**: screenshots are an action, not the default perception
-  layer; cropped screenshots can target a specific `@e`, `@t`, or `@r` ref.
+- **Targeted vision**: a bounded pre-brief pass can read opaque `@v` regions;
+  explicit screenshots are still the action that promotes visuals into reports.
 
 That is why Browser Agent is designed to be one of the most token-efficient browser
 agents you can run.
@@ -102,9 +102,9 @@ Browser Agent is not just a clicker.
 - follow popups and new tabs when the browser opens them
 - hit-test clicks and avoid obvious covered targets
 - read text without selecting the whole page
-- detect canvas/image/svg/cross-origin iframe regions the text tree cannot read
+- detect canvas/image/svg/CSS-background/cross-origin iframe regions the text tree cannot read
 - screenshot the viewport or crop exactly to a ref
-- list images and downloadable files without page JS
+- detect relevant images and list downloadable files without page JS
 - save real bytes from loaded resources when possible
 - save text snippets, images, screenshots, PDFs, docs, and archives to disk
 - return a complete Markdown report and browser-readable HTML copy
@@ -255,9 +255,10 @@ The interesting part is the middle.
 
 Browser Agent reconstructs a compact reasoning surface from the rendered browser:
 accessible controls, readable text, layout boxes, state, scroll position, and
-explicit "unreadable" regions for visual content. The model receives that small
-map plus a minimal event history. It does not receive the full DOM. It does not
-receive a screenshot unless it asks for one.
+explicit visual regions. A bounded vision pass may turn useful pixels into `@t`
+text or enriched `@v` descriptions before the planner sees the page. The model
+does not receive the full DOM, and screenshots are persisted only when it asks
+to save one.
 
 Actions are validated against the current snapshot before execution. Refs expire
 after navigation. Files and screenshots are persisted before their summaries go
