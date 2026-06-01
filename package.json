@@ -41,6 +41,7 @@
   "type": "commonjs",
   "dependencies": {
     "chrome-remote-interface": "^0.34.0",
-    "dotenv": "^17.4.2"
+    "dotenv": "^17.4.2",
+    "markdown-it": "^14.2.0"
   }
 }

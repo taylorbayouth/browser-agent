@@ -253,9 +253,9 @@ The LLM marks task completion by emitting `{ verb: "done", args: { result: "…"
 
 ### Final report
 
-At finish, the loop reads `runs/<id>/saved.md` if it fits `report.rawTokenBudget`; otherwise it reads `saved-index.md`. It hands that evidence, the original task, and optional trusted `context` to one no-tools report model call. That model writes `report.md` for the original task, so organization can vary with the assignment instead of being locked to a code template. The prompt tells it to preserve source URLs and relative `assets/` links, use only saved evidence, and call out gaps instead of inventing missing facts.
+At finish, the loop reads `runs/<id>/saved.md` if it fits `report.rawTokenBudget`; otherwise it reads `saved-index.md`. It hands that evidence, the original task, and optional trusted `context` to one no-tools report model call. That model writes `report.md` for the original task, so organization can vary with the assignment instead of being locked to a code template. The prompt tells it to think through the best layout for the specific task and evidence, preserve source URLs and relative `assets/` links, use only saved evidence, call out gaps instead of inventing missing facts, and avoid omitting saved records when raw evidence is available.
 
-When `saved-index.md` is used, `report.md` becomes summary-oriented rather than comprehensive; raw details remain in `saved.md`. If `report.enabled` is `false`, the report model is unavailable, or it returns no text, the loop writes a compact deterministic fallback report from the same selected evidence. `saved.md` and `saved-index.md` remain on disk either way. The same Markdown is also rendered to `report.html` with a small built-in renderer; plain URLs and Markdown links open in a new window, and no external Markdown dependency is required.
+When `saved-index.md` is used, `report.md` becomes summary-oriented rather than comprehensive; raw details remain in `saved.md`. If `report.enabled` is `false`, the report model is unavailable, or it returns no text, the loop writes a compact deterministic fallback report from the same selected evidence. `saved.md` and `saved-index.md` remain on disk either way. The same Markdown is also rendered to `report.html` with `markdown-it` plus a thin page wrapper for link targets, overflow-safe URLs, and optional report framing CSS.
 
 ---
 

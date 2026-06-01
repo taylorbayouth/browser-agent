@@ -25,6 +25,7 @@ const { buildHandoff } = require('../agent');
 const { buildSystemPrompt } = require('../lib/prompt');
 const { collectRegions, collectPasswordIds, buildSnapshotMaps } = require('../lib/extract');
 const { cleanWebText, decodeHtmlEntities } = require('../lib/text');
+const { markdownToHtml, markdownToHtmlDocument } = require('../lib/markdown');
 
 // ─── tiny sequential runner ──────────────────────────────────────────────────
 // Sequential matters: the loop tests share the injected fake provider, so they
@@ -1179,6 +1180,34 @@ async function scratchpadSuite() {
     }
   });
 
+  await test('html report linkifies URLs and adds overflow-safe CSS', () => {
+    const url = `https://example.test/search?q=${'product+'.repeat(24)}role`;
+    const html = markdownToHtml(`URL: ${url}]`);
+    const doc = markdownToHtmlDocument(`URL: ${url}]`);
+    assert.ok(html.includes(`href="${url}"`));
+    assert.ok(html.includes('target="_blank"'));
+    assert.ok(html.includes('</a>]'), 'trailing bracket stays outside link');
+    assert.ok(doc.includes('overflow-wrap:anywhere'));
+    assert.ok(doc.includes('word-break:break-word'));
+  });
+
+  await test('html report uses markdown library basics', () => {
+    const html = markdownToHtml('> Store each one like this:\n> \n> ## [Company] — [Title]');
+    assert.strictEqual((html.match(/<blockquote>/g) || []).length, 1);
+    assert.ok(html.includes('<h2>[Company]'));
+  });
+
+  await test('html report document accepts layout and CSS options', () => {
+    const plain = markdownToHtmlDocument('# Report', {
+      layout: 'plain',
+      className: 'handoff',
+      extraCss: '.handoff{max-width:72ch}',
+    });
+    assert.ok(plain.includes('<main class="handoff">'));
+    assert.ok(plain.includes('.handoff{max-width:72ch}'));
+    assert.ok(!plain.includes('max-width:960px'), 'plain layout omits default report frame');
+  });
+
   await test('filenameStemFromHint makes durable language slugs', () => {
     assert.strictEqual(filenameStemFromHint('Read the chart labels & values!'), 'read-the-chart-labels-and-values');
     assert.strictEqual(filenameStemFromHint('  Résumé / Q2 – totals  '), 'resume-q2-totals');
@@ -1210,13 +1239,15 @@ async function scratchpadSuite() {
       const scratch = createScratchpad({ dir, runId: 'run-1' });
       const markdown = '# Report\n\nhttps://example.test/a?x=1&y=2';
       assert.ok(fs.existsSync(scratch.dir), 'run directory exists at init');
-      assert.strictEqual(scratch.writeReport(markdown), scratch.reportPath);
+      assert.strictEqual(scratch.writeReport(markdown, { className: 'handoff', extraCss: '.handoff{max-width:72ch}' }), scratch.reportPath);
       assert.strictEqual(fs.readFileSync(scratch.reportPath, 'utf8'), markdown);
       const html = fs.readFileSync(scratch.reportHtmlPath, 'utf8');
       assert.ok(html.includes('<h1>Report</h1>'));
       assert.ok(html.includes('href="https://example.test/a?x=1&amp;y=2"'));
       assert.ok(html.includes('target="_blank"'));
       assert.ok(html.includes('rel="noopener noreferrer"'));
+      assert.ok(html.includes('<main class="handoff">'));
+      assert.ok(html.includes('.handoff{max-width:72ch}'));
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -1834,6 +1865,8 @@ async function loopSuite() {
       assert.strictEqual(report, '# Final Report\n\n- Organized Alpha finding');
       assert.ok(r.completions.some(c => c.model === 'fake-1'), 'report completion is recorded');
       assert.ok(reqs[2].messages[0].content.includes('Evidence source: saved.md'));
+      assert.ok(reqs[2].system.includes('Think deeply about the best layout'));
+      assert.ok(reqs[2].system.includes('do not leave out saved records'));
       assert.ok(reqs[2].messages[0].content.includes('Trusted context:\nPrefer concise user-facing reports.'));
       assert.ok(reqs[2].messages[0].content.includes('Alpha finding'));
     } finally {
