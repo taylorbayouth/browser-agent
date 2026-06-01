@@ -9,6 +9,7 @@ const CDP = require('chrome-remote-interface');
 const { flattenProperties, isInViewport, isInPerceptionBand, isLeanVisible, isCursorClickable, isInvalid, popupKind, safeValue, bboxArr } = require('../lib/extract');
 const { isRunning } = require('../lib/launch');
 const { connect, chooseTab } = require('../lib/connect');
+const { postJSON } = require('../lib/providers/_shared');
 
 // ─── Test runner ──────────────────────────────────────────────────────────────
 
@@ -310,6 +311,65 @@ test('chooseTab: stays put when nothing changed', () => {
 // ─── Integration tests (requires Chrome running on port 9222) ────────────────
 
 (async () => {
+  // ─── postJSON retry classification (browser-free, always runs) ──────────────
+  // Regression guard for the bug where a per-attempt timeout firing mid-body-read
+  // rejected res.json() and got mislabeled as a noRetry "non-JSON 200 body",
+  // defeating the retry budget and killing the run on a single transient stall.
+  {
+    const realFetch = global.fetch;
+    // A 200 whose body read never resolves on its own — it only settles when the
+    // caller's AbortController fires, rejecting with that abort reason. This is
+    // exactly what undici does when our per-attempt timeout aborts mid-stream.
+    const hangingThenAbort = () => async (_url, opts) => {
+      const signal = opts.signal;
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => null },
+        text: async () => '',
+        json: () => new Promise((_, reject) => {
+          if (signal.aborted) return reject(signal.reason);
+          signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+        }),
+      };
+    };
+
+    await testAsync('postJSON: a timeout mid-body-read is retried, not failed as invalid_response', async () => {
+      let calls = 0;
+      global.fetch = (...args) => { calls++; return hangingThenAbort()(...args); };
+      try {
+        let thrown;
+        try {
+          await postJSON('http://x', { body: {}, label: 'TestAPI', timeoutMs: 30, retries: 1 });
+        } catch (e) { thrown = e; }
+        assert.ok(thrown, 'should throw after exhausting retries');
+        assert.strictEqual(thrown.type, 'timeout', `expected type "timeout", got "${thrown.type}"`);
+        assert.notStrictEqual(thrown.type, 'invalid_response', 'must NOT be mislabeled invalid_response');
+        assert.strictEqual(calls, 2, `should retry (retries:1 → 2 attempts), got ${calls}`);
+      } finally { global.fetch = realFetch; }
+    });
+
+    await testAsync('postJSON: a genuinely malformed 200 body still fails fast with no retry', async () => {
+      let calls = 0;
+      global.fetch = async () => {
+        calls++;
+        return {
+          ok: true, status: 200, headers: { get: () => null }, text: async () => 'not json',
+          json: async () => { throw new SyntaxError('Unexpected token < in JSON'); },
+        };
+      };
+      try {
+        let thrown;
+        try {
+          await postJSON('http://x', { body: {}, label: 'TestAPI', timeoutMs: 1000, retries: 2 });
+        } catch (e) { thrown = e; }
+        assert.ok(thrown, 'should throw');
+        assert.strictEqual(thrown.type, 'invalid_response', `expected "invalid_response", got "${thrown.type}"`);
+        assert.strictEqual(calls, 1, `a dead endpoint should not retry, got ${calls} calls`);
+      } finally { global.fetch = realFetch; }
+    });
+  }
+
   // Integration tests drive a real Chrome tab — they navigate it to the fixture,
   // which would hijack whatever you're doing. So they're opt-in: set
   // BROWSER_AGENT_E2E=1 to run them. `npm test` stays browser-free and deterministic.
