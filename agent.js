@@ -73,7 +73,7 @@ Options:
   --model <id>                 Override the provider's default model
   --mode <auto|records|research>
                                Task shape. auto lets Step 0 choose; records
-                               enables record-ledger auto-stop; research does not.
+                               forces a record contract; research suppresses it.
   --context, -c <string>       Trusted background for the agent (user info,
                                preferences). Injected at the end of the system
                                prompt. Omit for none.
