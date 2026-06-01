@@ -17,7 +17,7 @@
     "vision": {
       "provider": "openai",
       "model": "gpt-5.4-mini",
-      "prompt": "Describe what you see in detail. Aim for 1500-2000 characters.",
+      "prompt": "Describe the image/page in detail, 1500-2000 chars.",
       "maxTokens": 1024,
       "timeoutMs": 10000
     },
