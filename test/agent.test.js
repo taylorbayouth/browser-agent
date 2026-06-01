@@ -2353,14 +2353,12 @@ async function planSuite() {
       recordContract: {
         recordName: 'job',
         target: 3,
-        // Mix of legacy required/optional keys — they must collapse into one
-        // flat `fields` map, with no required/optional tiers surviving.
         requiredFields: {
           company: 'Company name',
           title: 'Role title',
           url: 'Direct job URL',
         },
-        optionalFields: ['salary'],
+        optionalFields: { salary: 'Salary range' },
       },
     }));
 
@@ -2369,13 +2367,30 @@ async function planSuite() {
     assert.deepStrictEqual(parsed.recordContract, {
       recordName: 'job',
       target: 3,
-      fields: {
-        company: 'Company name',
-        title: 'Role title',
-        url: 'Direct job URL',
-        salary: 'salary',
-      },
+      requiredFields: { company: 'Company name', title: 'Role title', url: 'Direct job URL' },
+      optionalFields: { salary: 'Salary range' },
     });
+  });
+
+  await test('parsePlanResponse: legacy flat fields map is treated as all-required', () => {
+    const { parsePlanResponse } = require('../lib/planning');
+    const parsed = parsePlanResponse(JSON.stringify({
+      task: 'Collect items.',
+      recordContract: { recordName: 'item', target: 5, fields: { name: 'Item name', url: 'URL' } },
+    }));
+    assert.deepStrictEqual(parsed.recordContract, {
+      recordName: 'item', target: 5,
+      requiredFields: { name: 'Item name', url: 'URL' },
+      optionalFields: {},
+    });
+  });
+
+  await test('normalizeRecordContract: out-of-range target is clamped, not rejected', () => {
+    const { normalizeRecordContract } = require('../lib/planning');
+    assert.strictEqual(normalizeRecordContract({ recordName: 'x', target: 200, requiredFields: { a: 'A' }, optionalFields: {} }).target, 100);
+    assert.strictEqual(normalizeRecordContract({ recordName: 'x', target: 0,   requiredFields: { a: 'A' }, optionalFields: {} }).target, 1);
+    assert.strictEqual(normalizeRecordContract({ recordName: 'x', target: -5,  requiredFields: { a: 'A' }, optionalFields: {} }).target, 1);
+    assert.strictEqual(normalizeRecordContract({ recordName: 'x', target: '12 jobs', requiredFields: { a: 'A' }, optionalFields: {} }).target, 1);
   });
 
   await test('parsePlanResponse supports research mode without a record contract', () => {
@@ -2754,10 +2769,12 @@ async function memorySuite() {
       recordContract: {
         recordName: 'job',
         target: 3,
-        fields: {
+        requiredFields: {
           company: 'Company name',
           title: 'Role title',
           url: 'Direct job listing URL',
+        },
+        optionalFields: {
           contacts: '1-3 people at the company with name and title',
           dm: '2-3 sentence message',
         },
@@ -2802,6 +2819,9 @@ async function memorySuite() {
     assert.ok(plannerReqs[3].messages[0].content.includes('Saved records: 3/3.'));
     assert.ok(plannerReqs[3].messages[0].content.includes('Record target reached'));
     assert.ok(plannerReqs[1].messages[0].content.includes('record 1/3'));
+    // Progress block shows required vs optional field split.
+    assert.ok(plannerReqs[0].messages[0].content.includes('Required: company, title, url'));
+    assert.ok(plannerReqs[0].messages[0].content.includes('Optional (skip if not visible): contacts, dm'));
     // The immutable requirements checklist rides in the cached system prompt every turn.
     assert.ok(plannerReqs[0].system.includes('Requirements (your checklist'));
     assert.ok(plannerReqs[0].system.includes('2. For every job, capture 1-3 contacts'));
