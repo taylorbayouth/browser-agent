@@ -96,13 +96,20 @@ export interface TextNode {
   level: number | null;
   bbox: BBox | null;
   inViewport: boolean;
+  derived?: 'vision' | string;
+  sourceRef?: RegionRef | ElementRef | TextRef;
 }
 
 export interface RegionNode {
   ref: RegionRef;
-  role: 'canvas' | 'image' | 'svg' | 'iframe' | string;
+  role: 'canvas' | 'image' | 'graphic' | 'iframe' | 'video' | 'object' | 'background-image' | string;
   bbox: BBox;
   inViewport: boolean;
+  named?: boolean;
+  label?: string;
+  description?: string;
+  referenceImage?: boolean;
+  sourceUrl?: string;
 }
 
 export interface FlatStats {

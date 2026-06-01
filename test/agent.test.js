@@ -23,7 +23,7 @@ const { normalizeUrl, back, clickablePoint, bestQuadRect } = require('../lib/exe
 const { createScratchpad, filenameStem } = require('../lib/scratchpad');
 const { buildHandoff, parseArgs } = require('../agent');
 const { buildSystemPrompt } = require('../lib/prompt');
-const { collectRegions, collectPasswordIds, buildSnapshotMaps } = require('../lib/extract');
+const { collectRegions, collectPasswordIds, buildSnapshotMaps, STYLE_PROPS } = require('../lib/extract');
 const { cleanWebText, decodeHtmlEntities } = require('../lib/text');
 const { markdownToHtml, markdownToHtmlDocument } = require('../lib/markdown');
 const { isConnectionError } = require('../lib/connect');
@@ -153,6 +153,7 @@ const baseConfig = (overrides = {}) => ({
   settle: { afterActionMs: 0, maxMs: 0 },
   view: { includeText: true, includeCoords: true, maxTextChars: 200, dedupeText: true },
   executor: { backend: 'cdp' },
+  visualEvidence: { enabled: false, ...(overrides.visualEvidence || {}) },
   log: { enabled: false },
 });
 
@@ -355,13 +356,13 @@ async function reduceSuite() {
 }
 
 // Build a one-document DOMSnapshot from a compact node spec. Each node is
-// { tag, parent, backend, attrs?: {name:val}, bounds?: [x,y,w,h] }. Strings are
+// { tag, parent, backend, attrs?: {name:val}, bounds?: [x,y,w,h], style?: {} }. Strings are
 // interned into the shared table the way captureSnapshot returns them.
 function makeSnapshot(nodeSpecs) {
   const strings = [];
   const intern = (s) => { let i = strings.indexOf(s); if (i < 0) { i = strings.length; strings.push(s); } return i; };
   const nodeName = [], parentIndex = [], backendNodeId = [], attributes = [];
-  const layoutNodeIndex = [], bounds = [];
+  const layoutNodeIndex = [], bounds = [], styles = [];
   const cdIndex = [];   // contentDocumentIndex.index — iframes with an embedded (same-process) doc
   nodeSpecs.forEach((n, i) => {
     nodeName.push(intern(n.tag));
@@ -370,14 +371,18 @@ function makeSnapshot(nodeSpecs) {
     const flat = [];
     for (const [k, val] of Object.entries(n.attrs || {})) { flat.push(intern(k)); flat.push(intern(String(val))); }
     attributes.push(flat);
-    if (n.bounds) { layoutNodeIndex.push(i); bounds.push(n.bounds); }
+    if (n.bounds) {
+      layoutNodeIndex.push(i);
+      bounds.push(n.bounds);
+      styles.push(STYLE_PROPS.map(prop => intern(n.style?.[prop] ?? '')));
+    }
     if (n.contentDoc) cdIndex.push(i);
   });
   return {
     strings,
     documents: [{
       nodes: { nodeName, parentIndex, backendNodeId, attributes, contentDocumentIndex: { index: cdIndex, value: cdIndex.map(() => 0) } },
-      layout: { nodeIndex: layoutNodeIndex, bounds },
+      layout: { nodeIndex: layoutNodeIndex, bounds, styles },
     }],
   };
 }
@@ -421,6 +426,40 @@ async function regionSuite() {
     const regions = collectRegions(snapshot, maps, viewport, {});
     assert.deepStrictEqual(regions.map(r => r.role), ['iframe'], 'only the cross-origin iframe surfaces');
     assert.strictEqual(regions[0].backendNodeId, 301);
+  });
+
+  await test('surfaces non-repeating CSS background images, filters repeats and tiny boxes', () => {
+    const snapshot = makeSnapshot([
+      { tag: 'DIV', parent: -1, backend: 400 },
+      {
+        tag: 'DIV', parent: 0, backend: 401, bounds: [0, 0, 240, 160],
+        style: {
+          'background-image': 'url("https://cdn.example.test/profile.jpg")',
+          'background-repeat': 'no-repeat',
+          'background-size': 'cover',
+        },
+      },
+      {
+        tag: 'DIV', parent: 0, backend: 402, bounds: [0, 200, 240, 160],
+        style: {
+          'background-image': 'url("https://cdn.example.test/pattern.png")',
+          'background-repeat': 'repeat',
+        },
+      },
+      {
+        tag: 'DIV', parent: 0, backend: 403, bounds: [0, 400, 30, 30],
+        style: {
+          'background-image': 'url("https://cdn.example.test/icon.png")',
+          'background-repeat': 'no-repeat',
+        },
+      },
+    ]);
+    const maps = buildSnapshotMaps(snapshot);
+    const regions = collectRegions(snapshot, maps, viewport, {});
+    assert.strictEqual(regions.length, 1);
+    assert.strictEqual(regions[0].role, 'background-image');
+    assert.strictEqual(regions[0].sourceUrl, 'https://cdn.example.test/profile.jpg');
+    assert.strictEqual(regions[0].backendNodeId, 401);
   });
 
   await test('aria-label surfaces a named visual; inViewportOnly drops off-screen graphics', () => {
@@ -515,7 +554,7 @@ async function screenshotSuite() {
 
 async function visionSuite() {
   console.log('\nvision:');
-  const { normalizeVisionResult } = require('../lib/vision');
+  const { normalizeVisionResult, normalizeEvidenceResult } = require('../lib/vision');
 
   await test('normalizes typed JSON into summary + description', () => {
     const out = normalizeVisionResult('{"summary":"short page summary","description":"full page description"}');
@@ -527,6 +566,159 @@ async function visionSuite() {
     assert.strictEqual(out.summary, 'one two three four five six seven eight nine ten');
     assert.strictEqual(out.description, 'one two three four five six seven eight nine ten eleven twelve');
   });
+
+  await test('normalizes visual-evidence JSON without text confidence', () => {
+    const out = normalizeEvidenceResult('{"description":"line chart","text":"Q1 $10 Q2 $20","omit":false,"referenceImage":true}');
+    assert.deepStrictEqual(out, {
+      description: 'line chart',
+      text: 'Q1 $10 Q2 $20',
+      omit: false,
+      referenceImage: true,
+    });
+  });
+
+  await test('visual-evidence fallback keeps malformed text as description', () => {
+    const out = normalizeEvidenceResult('not json but useful');
+    assert.deepStrictEqual(out, {
+      description: 'not json but useful',
+      text: '',
+      omit: false,
+      referenceImage: false,
+    });
+  });
+}
+
+async function visualEvidenceSuite() {
+  console.log('\nvisual evidence:');
+  const { createVisualEvidence } = require('../lib/visual-evidence');
+  const visionMod = require('../lib/vision');
+  const origAnalyze = visionMod.analyzeVisualEvidence;
+  const origDescribe = visionMod.describe;
+  const crop = Buffer.from('crop bytes').toString('base64');
+
+  function regionBrief() {
+    return makeBrief({
+      text: [],
+      regions: [{ ref: '@v1', role: 'canvas', bbox: { x: 10, y: 20, width: 300, height: 160 }, inViewport: true, named: false }],
+      lookup: { '@e1': 111, '@v1': 333 },
+    });
+  }
+
+  function sessionFor(briefFactory, captureCalls) {
+    const session = makeFakeSession([briefFactory]);
+    session.client.Page = {
+      captureScreenshot: async (params) => {
+        captureCalls.push(params);
+        return { data: crop };
+      },
+    };
+    return session;
+  }
+
+  try {
+    await test('enriches @v descriptions and injects synthetic @t text', async () => {
+      const captureCalls = [];
+      visionMod.analyzeVisualEvidence = async () => ({
+        description: 'A revenue line chart rising across four quarters.',
+        text: 'Q1 $10 Q2 $20 Q3 $30 Q4 $40',
+        omit: false,
+        referenceImage: true,
+      });
+      const brief = regionBrief();
+      const session = sessionFor(() => brief, captureCalls);
+      await createVisualEvidence({ enabled: true, maxRegions: 8 }).enrich({ session, brief });
+      const listing = reduce(brief, { includeText: true, includeCoords: false }).listing;
+      assert.ok(listing.includes('vision: "A revenue line chart rising across four quarters."'), 'visual description is in the @v line');
+      assert.ok(listing.includes('take_screenshot @v1 to save image'), 'reference image hint is shown');
+      assert.ok(listing.includes('[@t1]') && listing.includes('Q1 $10 Q2 $20'), 'OCR text is exposed as @t');
+      assert.strictEqual(brief.text[0].derived, 'vision');
+      assert.strictEqual(brief.text[0].sourceRef, '@v1');
+      assert.strictEqual(captureCalls.length, 1);
+    });
+
+    await test('omits blank or non-useful visual regions from the planner listing', async () => {
+      const captureCalls = [];
+      visionMod.analyzeVisualEvidence = async () => ({ description: '', text: '', omit: true, referenceImage: false });
+      const brief = regionBrief();
+      const session = sessionFor(() => brief, captureCalls);
+      await createVisualEvidence({ enabled: true, maxRegions: 8 }).enrich({ session, brief });
+      assert.deepStrictEqual(brief.regions, [], 'omitted region removed');
+      assert.ok(!('@v1' in brief.lookup), 'omitted region no longer validates as a visible ref');
+      assert.strictEqual(captureCalls.length, 1);
+    });
+
+    await test('automatic enrichment does not write saved evidence or assets', async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ba-visual-evidence-'));
+      try {
+        const captureCalls = [];
+        visionMod.analyzeVisualEvidence = async () => ({
+          description: 'A useful chart.',
+          text: 'Revenue $40',
+          omit: false,
+          referenceImage: true,
+        });
+        installFakeProvider([[action('done', { args: {} })]]);
+        const session = sessionFor(regionBrief, captureCalls);
+        const r = await run({
+          session,
+          task: 'inspect chart',
+          config: baseConfig({
+            visualEvidence: { enabled: true, maxRegions: 8 },
+            scratchpad: { enabled: true, dir },
+          }),
+        });
+        assert.strictEqual(r.status, 'completed', r.error);
+        assert.strictEqual(captureCalls.length, 1, 'visual was analyzed');
+        assert.ok(!fs.existsSync(path.join(r.artifacts.runDir, 'saved.md')), 'no saved.md from enrichment alone');
+        assert.ok(!fs.existsSync(r.artifacts.assetsDir), 'no assets dir from enrichment alone');
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    await test('explicit take_screenshot persists cached crop and description', async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ba-visual-promote-'));
+      try {
+        const captureCalls = [];
+        let describeCalls = 0;
+        visionMod.analyzeVisualEvidence = async () => ({
+          description: 'Cached chart description.',
+          text: '',
+          omit: false,
+          referenceImage: true,
+        });
+        visionMod.describe = async () => {
+          describeCalls++;
+          return { summary: 'fresh', description: 'fresh describe should not be used' };
+        };
+        installFakeProvider([
+          [action('take_screenshot', { ref: '@v1' })],
+          [action('done', { args: {} })],
+        ]);
+        const session = sessionFor(regionBrief, captureCalls);
+        const r = await run({
+          session,
+          task: 'save chart',
+          config: baseConfig({
+            visualEvidence: { enabled: true, maxRegions: 8 },
+            scratchpad: { enabled: true, dir },
+          }),
+        });
+        assert.strictEqual(r.status, 'completed', r.error);
+        assert.strictEqual(captureCalls.length, 1, 'take_screenshot reused the enrichment crop');
+        assert.strictEqual(describeCalls, 0, 'take_screenshot reused the enrichment description');
+        const savedPath = r.steps[0].observation.detail.savedPath;
+        assert.ok(savedPath && fs.existsSync(savedPath), 'promoted image persisted');
+        assert.strictEqual(fs.readFileSync(savedPath, 'utf8'), 'crop bytes');
+        assert.ok(fs.readFileSync(path.join(r.artifacts.runDir, 'saved.md'), 'utf8').includes('Cached chart description.'));
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  } finally {
+    visionMod.analyzeVisualEvidence = origAnalyze;
+    visionMod.describe = origDescribe;
+  }
 }
 
 async function osGateSuite() {
@@ -3466,6 +3658,7 @@ async function connectionErrorSuite() {
   await reduceSuite();
   await regionSuite();
   await visionSuite();
+  await visualEvidenceSuite();
   await screenshotSuite();
   await osGateSuite();
   await validateSuite();
