@@ -1867,6 +1867,7 @@ async function loopSuite() {
       assert.ok(reqs[2].messages[0].content.includes('Evidence source: saved.md'));
       assert.ok(reqs[2].system.includes('Think deeply about the best layout'));
       assert.ok(reqs[2].system.includes('do not leave out saved records'));
+      assert.ok(reqs[2].system.includes('Prefer descriptive Markdown links'));
       assert.ok(reqs[2].messages[0].content.includes('Trusted context:\nPrefer concise user-facing reports.'));
       assert.ok(reqs[2].messages[0].content.includes('Alpha finding'));
     } finally {
