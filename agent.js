@@ -24,6 +24,7 @@ const { providers } = require('./lib/providers');
 
 const PROVIDERS = new Set(Object.keys(providers));
 const EXECUTORS = new Set(['os', 'cdp']);
+const MODES = new Set(['auto', 'records', 'research']);
 
 function usageError(message) {
   console.error(`error: ${message}`);
@@ -49,6 +50,7 @@ function parseArgs(argv) {
     if (a === '--task' || a === '-t') args.task = value(argv, i++, a);
     else if (a === '--provider' || a === '-p') { ((override.models ??= {}).primary ??= {}).provider = value(argv, i++, a); }
     else if (a === '--model') { ((override.models ??= {}).primary ??= {}).model = value(argv, i++, a); }
+    else if (a === '--mode') override.mode = value(argv, i++, a);
     else if (a === '--context' || a === '-c') override.context = value(argv, i++, a);
     else if (a === '--executor') override.executor.backend = value(argv, i++, a);
     else if (a === '--help' || a === '-h') { printHelp(); process.exit(0); }
@@ -69,6 +71,9 @@ Options:
   --task, -t <string>          The task for the agent (or pass as positional)
   --provider, -p <name>        LLM provider: ${[...PROVIDERS].join(' | ')}
   --model <id>                 Override the provider's default model
+  --mode <auto|records|research>
+                               Task shape. auto lets Step 0 choose; records
+                               enables record-ledger auto-stop; research does not.
   --context, -c <string>       Trusted background for the agent (user info,
                                preferences). Injected at the end of the system
                                prompt. Omit for none.
@@ -85,6 +90,7 @@ Environment:
   GEMINI_API_KEY          Required for the gemini provider.
   BROWSER_AGENT_PROVIDER     Override config provider (${[...PROVIDERS].join('|')}).
   BROWSER_AGENT_EXECUTOR     Override config executor backend ('os'|'cdp').
+  BROWSER_AGENT_MODE         Override task mode ('auto'|'records'|'research').
   BROWSER_AGENT_CHROME_PATH  Explicit Chrome/Chromium executable path.
   BROWSER_AGENT_CONTEXT      Trusted background injected into the system prompt.
   OPENAI_PROMPT_CACHE_RETENTION  Optional OpenAI cache retention ('24h' for
@@ -101,6 +107,9 @@ function validateConfig(config) {
   const backend = config.executor?.backend;
   if (!EXECUTORS.has(backend)) {
     usageError(`unknown executor "${backend}" (expected: ${[...EXECUTORS].join(', ')})`);
+  }
+  if (!MODES.has(config.mode)) {
+    usageError(`unknown mode "${config.mode}" (expected: ${[...MODES].join(', ')})`);
   }
   // Numeric loop knobs must be sane. A bad value from the config file otherwise
   // fails silently and weirdly: maxSteps <= 0 exits before the first turn; a
@@ -131,6 +140,8 @@ function buildHandoff(runArtifact, config = {}) {
     runId: runArtifact.id,
     task: runArtifact.task,
     context,
+    mode: runArtifact.mode ?? config.mode ?? null,
+    taskType: runArtifact.taskType ?? null,
     plan: runArtifact.plan ?? null,
     result: runArtifact.result ?? null,
     report: {

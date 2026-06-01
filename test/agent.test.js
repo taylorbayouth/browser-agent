@@ -21,7 +21,7 @@ const { estimateTokens } = require('../lib/tokens');
 const shared = require('../lib/providers/_shared');
 const { normalizeUrl, back, clickablePoint, bestQuadRect } = require('../lib/executors/page');
 const { createScratchpad, filenameStem } = require('../lib/scratchpad');
-const { buildHandoff } = require('../agent');
+const { buildHandoff, parseArgs } = require('../agent');
 const { buildSystemPrompt } = require('../lib/prompt');
 const { collectRegions, collectPasswordIds, buildSnapshotMaps } = require('../lib/extract');
 const { cleanWebText, decodeHtmlEntities } = require('../lib/text');
@@ -989,23 +989,30 @@ async function configSuite() {
   await test('env overrides do not mutate DEFAULTS across reloads', () => {
     const oldProvider = process.env.BROWSER_AGENT_PROVIDER;
     const oldExecutor = process.env.BROWSER_AGENT_EXECUTOR;
+    const oldMode = process.env.BROWSER_AGENT_MODE;
     try {
       process.env.BROWSER_AGENT_PROVIDER = 'anthropic';
       process.env.BROWSER_AGENT_EXECUTOR = 'cdp';
+      process.env.BROWSER_AGENT_MODE = 'records';
       const overridden = loadConfig({ path: path.join(os.tmpdir(), 'missing-browser-agent-config.json'), reload: true });
       assert.strictEqual(overridden.models.primary.provider, 'anthropic');
       assert.strictEqual(overridden.executor.backend, 'cdp');
+      assert.strictEqual(overridden.mode, 'records');
 
       delete process.env.BROWSER_AGENT_PROVIDER;
       delete process.env.BROWSER_AGENT_EXECUTOR;
+      delete process.env.BROWSER_AGENT_MODE;
       const fresh = loadConfig({ path: path.join(os.tmpdir(), 'missing-browser-agent-config.json'), reload: true });
       assert.strictEqual(fresh.models.primary.provider, DEFAULTS.models.primary.provider);
       assert.strictEqual(fresh.executor.backend, DEFAULTS.executor.backend);
+      assert.strictEqual(fresh.mode, DEFAULTS.mode);
     } finally {
       if (oldProvider === undefined) delete process.env.BROWSER_AGENT_PROVIDER;
       else process.env.BROWSER_AGENT_PROVIDER = oldProvider;
       if (oldExecutor === undefined) delete process.env.BROWSER_AGENT_EXECUTOR;
       else process.env.BROWSER_AGENT_EXECUTOR = oldExecutor;
+      if (oldMode === undefined) delete process.env.BROWSER_AGENT_MODE;
+      else process.env.BROWSER_AGENT_MODE = oldMode;
       loadConfig({ path: path.join(os.tmpdir(), 'missing-browser-agent-config.json'), reload: true });
     }
   });
@@ -1341,11 +1348,20 @@ async function logSuite() {
 async function agentCliSuite() {
   console.log('\nagent cli:');
 
+  await test('parseArgs accepts --mode as a top-level config override', () => {
+    const parsed = parseArgs(['--mode', 'records', '--provider', 'anthropic', 'Find 10 jobs']);
+    assert.strictEqual(parsed.task, 'Find 10 jobs');
+    assert.strictEqual(parsed.override.mode, 'records');
+    assert.strictEqual(parsed.override.models.primary.provider, 'anthropic');
+  });
+
   await test('buildHandoff returns the compact stdout contract with absolute paths', () => {
     const runArtifact = {
       id: 'run-1',
       task: 'Collect listings',
       status: 'completed',
+      mode: 'auto',
+      taskType: 'records',
       result: 'ok',
       report: '# Report',
       reportEvidence: { source: 'saved-index.md', rawTokens: 4500, rawTokenBudget: 3000 },
@@ -1373,6 +1389,8 @@ async function agentCliSuite() {
     assert.strictEqual(out.status, 'completed');
     assert.strictEqual(out.runId, 'run-1');
     assert.strictEqual(out.context, 'prefer concise summaries');
+    assert.strictEqual(out.mode, 'auto');
+    assert.strictEqual(out.taskType, 'records');
     assert.strictEqual(out.report.markdown, '# Report');
     assert.strictEqual(out.report.path, '/tmp/runs/run-1/report.md');
     assert.strictEqual(out.report.htmlPath, '/tmp/runs/run-1/report.html');
@@ -2174,6 +2192,7 @@ async function planSuite() {
     }));
 
     assert.strictEqual(parsed.plan, 'Search official listings and save each complete job.');
+    assert.strictEqual(parsed.taskType, 'records');
     assert.deepStrictEqual(parsed.recordContract, {
       recordName: 'job',
       target: 3,
@@ -2184,6 +2203,39 @@ async function planSuite() {
       },
       optionalFields: { salary: 'salary' },
     });
+  });
+
+  await test('parsePlanResponse supports research mode without a record contract', () => {
+    const { parsePlanResponse } = require('../lib/planning');
+    const parsed = parsePlanResponse(JSON.stringify({
+      plan: 'Compare official docs and recent credible analyses, then synthesize the tradeoffs.',
+      taskType: 'research',
+      recordContract: {
+        recordName: 'source',
+        target: 10,
+        requiredFields: { url: 'URL' },
+        optionalFields: {},
+      },
+    }));
+
+    assert.strictEqual(parsed.taskType, 'research');
+    assert.strictEqual(parsed.recordContract, null);
+  });
+
+  await test('explicit records mode forces record task type even if Step 0 omits it', () => {
+    const { parsePlanResponse } = require('../lib/planning');
+    const parsed = parsePlanResponse(JSON.stringify({
+      plan: 'Collect candidates and save complete entries.',
+      recordContract: {
+        recordName: 'vendor',
+        target: 2,
+        requiredFields: { name: 'Vendor name' },
+        optionalFields: {},
+      },
+    }), { mode: 'records' });
+
+    assert.strictEqual(parsed.taskType, 'records');
+    assert.strictEqual(parsed.recordContract.target, 2);
   });
 
   await test('buildSystemPrompt: plan sits before context, context stays last', () => {
@@ -2529,6 +2581,36 @@ async function memorySuite() {
     assert.ok(plannerReqs[1].messages[0].content.includes('Saved records: 1/3.'));
     assert.ok(plannerReqs[2].messages[0].content.includes('Saved records: 2/3.'));
     assert.ok(plannerReqs[1].messages[0].content.includes('record 1/3'));
+  });
+
+  await test('research mode does not auto-complete from saved records', async () => {
+    const researchPlan = JSON.stringify({
+      plan: 'Research the options and synthesize the tradeoffs.',
+      taskType: 'research',
+      recordContract: null,
+    });
+    const reqs = installFakeProvider(
+      [
+        [action('save_record', { args: { content: 'Source A', summary: 'Source A' } })],
+        [action('save_record', { args: { content: 'Source B', summary: 'Source B' } })],
+        [action('save_record', { args: { content: 'Source C', summary: 'Source C' } })],
+        [action('done', { args: { result: 'Synthesis complete' } })],
+      ],
+      [researchPlan],
+    );
+    const session = makeFakeSession([makeBrief, makeBrief, makeBrief, makeBrief]);
+    const r = await run({
+      session,
+      task: 'Research the best approach.',
+      config: baseConfig({ plan: { enabled: true }, mode: 'research' }),
+    });
+
+    assert.strictEqual(r.status, 'completed', r.error);
+    assert.strictEqual(r.result, 'Synthesis complete');
+    assert.strictEqual(r.taskType, 'research');
+    assert.strictEqual(r.recordContract, null);
+    assert.deepStrictEqual(r.steps.map(s => s.action.verb), ['save_record', 'save_record', 'save_record', 'done']);
+    assert.strictEqual(reqs.filter(q => q.tools && q.tools.length).length, 4, 'research mode should continue until done');
   });
 
   await test('turn log includes the simplified LLM payload', async () => {

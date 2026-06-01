@@ -238,6 +238,8 @@ node agent.js --provider anthropic "..."
 node agent.js --provider gemini --model gemini-3.1-pro "..."
 node agent.js --provider ollama --model llama3.1 "..."
 node agent.js --executor cdp "..."
+node agent.js --mode records "Find 10 jobs with contacts and outreach DMs"
+node agent.js --mode research "Compare AI browser automation approaches"
 node agent.js --context "Trusted operator context here" "..."
 ```
 
