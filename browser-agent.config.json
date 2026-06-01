@@ -3,9 +3,10 @@
     "expand": {
       "enabled": true,
       "provider": "openai",
-      "model": "gpt-5.5",
+      "model": "gpt-5.4-mini",
       "reasoningEffort": "medium",
-      "timeoutMs": 30000
+      "maxTokens": 2048,
+      "timeoutMs": 20000
     },
     "primary": {
       "provider": "openai",
@@ -24,9 +25,9 @@
     "reflect": {
       "enabled": true,
       "provider": "openai",
-      "model": "gpt-5.5",
+      "model": "gpt-5.4-mini",
       "reasoningEffort": "medium",
-      "timeoutMs": 30000,
+      "timeoutMs": 20000,
       "maxReflections": 10,
       "cooldownTurns": 4,
       "budgetTurnFraction": 0.6,
@@ -35,8 +36,8 @@
     "report": {
       "enabled": true,
       "provider": "openai",
-      "model": "gpt-5.5",
-      "reasoningEffort": "medium",
+      "model": "gpt-5.4-mini",
+      "reasoningEffort": "high",
       "timeoutMs": 60000,
       "rawTokenBudget": 3000
     }
