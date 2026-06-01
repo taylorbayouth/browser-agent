@@ -144,7 +144,7 @@ const baseConfig = (overrides = {}) => ({
     report: { enabled: false, provider: 'fake', model: null, ...(overrides.report || {}) },
     // Step 0 off by default too: it would otherwise prepend a no-tools planning
     // call to every run and consume the reflectTurns queue. The plan suite opts in.
-    plan: { enabled: false, provider: 'fake', model: null, ...(overrides.plan || {}) },
+    expand: { enabled: false, provider: 'fake', model: null, ...(overrides.expand || {}) },
   },
   context: overrides.context ?? null,
   loop: { maxSteps: 10, shortCircuitOnNoChange: false, pollMs: 0, maxNoChangePolls: 1, maxEmptyPlans: 3, ...(overrides.loop || {}) },
@@ -2178,10 +2178,12 @@ async function planSuite() {
   await test('parsePlanResponse extracts plan prose and the record contract', () => {
     const { parsePlanResponse } = require('../lib/planning');
     const parsed = parsePlanResponse(JSON.stringify({
-      plan: 'Search official listings and save each complete job.',
+      task: 'Search official listings and save each complete job.',
       recordContract: {
         recordName: 'job',
         target: 3,
+        // Mix of legacy required/optional keys — they must collapse into one
+        // flat `fields` map, with no required/optional tiers surviving.
         requiredFields: {
           company: 'Company name',
           title: 'Role title',
@@ -2191,24 +2193,24 @@ async function planSuite() {
       },
     }));
 
-    assert.strictEqual(parsed.plan, 'Search official listings and save each complete job.');
+    assert.strictEqual(parsed.task, 'Search official listings and save each complete job.');
     assert.strictEqual(parsed.taskType, 'records');
     assert.deepStrictEqual(parsed.recordContract, {
       recordName: 'job',
       target: 3,
-      requiredFields: {
+      fields: {
         company: 'Company name',
         title: 'Role title',
         url: 'Direct job URL',
+        salary: 'salary',
       },
-      optionalFields: { salary: 'salary' },
     });
   });
 
   await test('parsePlanResponse supports research mode without a record contract', () => {
     const { parsePlanResponse } = require('../lib/planning');
     const parsed = parsePlanResponse(JSON.stringify({
-      plan: 'Compare official docs and recent credible analyses, then synthesize the tradeoffs.',
+      task: 'Compare official docs and recent credible analyses, then synthesize the tradeoffs.',
       taskType: 'research',
       recordContract: {
         recordName: 'source',
@@ -2225,12 +2227,11 @@ async function planSuite() {
   await test('explicit records mode forces record task type even if Step 0 omits it', () => {
     const { parsePlanResponse } = require('../lib/planning');
     const parsed = parsePlanResponse(JSON.stringify({
-      plan: 'Collect candidates and save complete entries.',
+      task: 'Collect candidates and save complete entries.',
       recordContract: {
         recordName: 'vendor',
         target: 2,
-        requiredFields: { name: 'Vendor name' },
-        optionalFields: {},
+        fields: { name: 'Vendor name' },
       },
     }), { mode: 'records' });
 
@@ -2238,43 +2239,38 @@ async function planSuite() {
     assert.strictEqual(parsed.recordContract.target, 2);
   });
 
-  await test('buildSystemPrompt: plan sits before context, context stays last', () => {
+  await test('buildSystemPrompt: task sits before context, context stays last', () => {
     const reg = { click: registry.click, done: registry.done };
     const base = buildSystemPrompt(reg);
-    const plan = 'Start at official docs, capture version numbers, deliver a dated changelog table.';
+    const task = 'Start at official docs, capture version numbers, deliver a dated changelog table.';
     const ctx = 'The user is Taylor.';
-    const withPlan = buildSystemPrompt(reg, ctx, plan);
-    assert.ok(withPlan.startsWith(base), 'static template stays an intact prefix');
-    assert.ok(withPlan.includes('Plan of Action ('), 'plan header present');
-    assert.ok(withPlan.includes(plan), 'plan prose present');
-    assert.ok(withPlan.endsWith(ctx), 'context is still the very last block');
-    assert.ok(withPlan.indexOf('Plan of Action') < withPlan.indexOf('Context ('), 'plan precedes context');
+    const withTask = buildSystemPrompt(reg, ctx, task);
+    assert.ok(withTask.startsWith(base), 'static template stays an intact prefix');
+    assert.ok(withTask.includes('Task ('), 'task header present');
+    assert.ok(withTask.includes(task), 'task text present');
+    assert.ok(withTask.endsWith(ctx), 'context is still the very last block');
+    assert.ok(withTask.indexOf('Task (') < withTask.indexOf('Context ('), 'task precedes context');
   });
 
-  await test('buildSystemPrompt: empty/blank plan is omitted (identical to no plan)', () => {
+  await test('buildSystemPrompt: empty/blank task is omitted (identical to no task)', () => {
     const reg = { click: registry.click, done: registry.done };
     const withCtx = buildSystemPrompt(reg, 'ctx');
-    assert.strictEqual(buildSystemPrompt(reg, 'ctx', null), withCtx, 'null plan → identical');
-    assert.strictEqual(buildSystemPrompt(reg, 'ctx', '   '), withCtx, 'blank plan → identical');
-    assert.ok(!buildSystemPrompt(reg).includes('Plan of Action'), 'no plan header when absent');
+    assert.strictEqual(buildSystemPrompt(reg, 'ctx', null), withCtx, 'null task → identical');
+    assert.strictEqual(buildSystemPrompt(reg, 'ctx', '   '), withCtx, 'blank task → identical');
+    assert.ok(!buildSystemPrompt(reg).includes('Task ('), 'no task header when absent');
   });
 
-  await test('buildReflectMessage / buildReportMessage carry the plan only when present', () => {
-    const plan = 'Compare three vendors on price and SLA; deliver a recommendation.';
-    const rfWith = buildReflectMessage({ task: 't', plan, url: 'u', title: 'T', saved: 's' });
-    assert.ok(rfWith.content.includes('plan of action for this run'), 'reflect labels the plan');
-    assert.ok(rfWith.content.includes(plan), 'reflect includes the plan prose');
-    const rfNo = buildReflectMessage({ task: 't', url: 'u', title: 'T', saved: 's' });
-    assert.ok(!rfNo.content.includes('plan of action for this run'), 'reflect omits the plan block when absent');
-
-    const rpWith = buildReportMessage({ task: 't', plan, status: 'completed', evidence: 'e' });
-    assert.ok(rpWith.content.includes("agent's plan of action"), 'report labels the plan');
-    assert.ok(rpWith.content.includes(plan), 'report includes the plan prose');
-    const rpNo = buildReportMessage({ task: 't', status: 'completed', evidence: 'e' });
-    assert.ok(!rpNo.content.includes("agent's plan of action"), 'report omits the plan block when absent');
+  await test('buildReflectMessage / buildReportMessage show the task and carry no plan block', () => {
+    const task = 'Compare three vendors on price and SLA; deliver a recommendation.';
+    const rf = buildReflectMessage({ task, url: 'u', title: 'T', saved: 's' });
+    assert.ok(rf.content.includes(task), 'reflect shows the task');
+    assert.ok(!rf.content.includes('plan of action'), 'reflect carries no plan block');
+    const rp = buildReportMessage({ task, status: 'completed', evidence: 'e' });
+    assert.ok(rp.content.includes(task), 'report shows the task');
+    assert.ok(!rp.content.toLowerCase().includes('plan of action'), 'report carries no plan block');
   });
 
-  await test('step 0 threads the plan into the planner system prompt and the report', async () => {
+  await test('step 0 threads the expanded task into the planner system prompt and the report', async () => {
     const PLAN = 'Begin at the official pricing page, corroborate on one review site, capture each tier price and included seats, then deliver a tier comparison table.';
     const reqs = installFakeProvider(
       [
@@ -2290,37 +2286,37 @@ async function planSuite() {
         task: 'compare pricing tiers',
         config: {
           ...baseConfig({
-            plan: { enabled: true },
+            expand: { enabled: true },
             report: { enabled: true, provider: 'fake', model: 'report-model' },
           }),
           scratchpad: { enabled: true, dir },
         },
       });
       assert.strictEqual(r.status, 'completed', r.error);
-      assert.strictEqual(r.plan, PLAN, 'plan is recorded on the run artifact');
+      assert.strictEqual(r.expandedTask, PLAN, 'expanded task is recorded on the run artifact');
 
       const planReq = reqs.find(isPlanReq);
-      assert.ok(planReq, 'a Step-0 plan call was made');
-      assert.ok(planReq.messages[0].content.includes('compare pricing tiers'), 'plan call sees the task');
+      assert.ok(planReq, 'a Step-0 call was made');
+      assert.ok(planReq.messages[0].content.includes('compare pricing tiers'), 'Step 0 sees the raw task');
 
-      // Every planner turn carries the plan inside its (cached) system prompt.
+      // Every planner turn carries the task inside its (cached) system prompt.
       const planner = reqs.filter(isPlannerReq);
       assert.ok(planner.length >= 2, 'planner ran at least twice');
       for (const q of planner) {
-        assert.ok(q.system.includes('Plan of Action ('), 'planner system has the Plan of Action block');
-        assert.ok(q.system.includes(PLAN), 'planner system carries the plan prose');
+        assert.ok(q.system.includes('Task ('), 'planner system has the Task block');
+        assert.ok(q.system.includes(PLAN), 'planner system carries the expanded task');
       }
 
-      // The final report call sees the plan too — the report-quality payoff.
+      // The final report call sees the task too — the report-quality payoff.
       const reportReq = reqs.find(isReportReq);
       assert.ok(reportReq, 'a report call was made');
-      assert.ok(reportReq.messages[0].content.includes(PLAN), 'report message carries the plan');
+      assert.ok(reportReq.messages[0].content.includes(PLAN), 'report message carries the task');
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  await test('step 0 threads the plan into a reflection turn', async () => {
+  await test('step 0 threads the expanded task into a reflection turn', async () => {
     const PLAN = 'Search the docs, then pivot to the changelog if the docs are thin.';
     const reqs = installFakeProvider(
       [
@@ -2337,41 +2333,42 @@ async function planSuite() {
       task: 'x',
       config: baseConfig({
         loop: { shortCircuitOnNoChange: true, pollMs: 0, maxNoChangePolls: 1, maxStuckRepeats: 2 },
-        plan: { enabled: true },
+        expand: { enabled: true },
         reflect: { enabled: true, maxReflections: 10, cooldownTurns: 4, budgetTurnFraction: 0.99 },
       }),
     });
     assert.strictEqual(r.status, 'completed', r.error);
-    assert.strictEqual(r.plan, PLAN);
+    assert.strictEqual(r.expandedTask, PLAN);
     const reflectReq = reqs.find(isReflectReq);
     assert.ok(reflectReq, 'a reflection turn fired');
-    assert.ok(reflectReq.messages[0].content.includes(PLAN), 'reflection message carries the plan');
+    assert.ok(reflectReq.messages[0].content.includes(PLAN), 'reflection message carries the task');
   });
 
-  await test('step 0 disabled → no plan call and no Plan of Action block', async () => {
+  await test('step 0 disabled → no Step-0 call; raw task drives the run', async () => {
     const reqs = installFakeProvider([[action('done', { args: { result: 'ok' } })]]);
     const r = await run({
       session: makeFakeSession([makeBrief]),
-      task: 'x',
-      config: baseConfig({ plan: { enabled: false } }),
+      task: 'find the lime widget',
+      config: baseConfig({ expand: { enabled: false } }),
     });
     assert.strictEqual(r.status, 'completed', r.error);
-    assert.strictEqual(r.plan, null, 'no plan recorded when disabled');
-    assert.ok(!reqs.some(isPlanReq), 'no Step-0 plan call was made');
-    assert.ok(reqs.filter(isPlannerReq).every(q => !q.system.includes('Plan of Action')), 'planner system has no plan block');
+    assert.strictEqual(r.expandedTask, null, 'no expanded task recorded when disabled');
+    assert.ok(!reqs.some(isPlanReq), 'no Step-0 call was made');
+    // The raw operator task still rides in the cached system prompt verbatim.
+    assert.ok(reqs.filter(isPlannerReq).every(q => q.system.includes('Task (') && q.system.includes('find the lime widget')), 'planner system carries the raw task');
   });
 
-  await test('step 0 failure never breaks the run (proceeds with no plan)', async () => {
+  await test('step 0 failure never breaks the run (proceeds with the raw task)', async () => {
     const reqs = installFakeProvider([[action('done', { args: { result: 'ok' } })]]);
     const r = await run({
       session: makeFakeSession([makeBrief]),
-      task: 'x',
+      task: 'find the lime widget',
       // A bogus plan provider makes the Step-0 call throw; the loop must swallow it.
-      config: baseConfig({ plan: { enabled: true, provider: 'no-such-provider' } }),
+      config: baseConfig({ expand: { enabled: true, provider: 'no-such-provider' } }),
     });
     assert.strictEqual(r.status, 'completed', r.error);
-    assert.strictEqual(r.plan, null, 'no plan recorded when Step 0 fails');
-    assert.ok(reqs.filter(isPlannerReq).every(q => !q.system.includes('Plan of Action')), 'planner ran without a plan block');
+    assert.strictEqual(r.expandedTask, null, 'no expanded task recorded when Step 0 fails');
+    assert.ok(reqs.filter(isPlannerReq).every(q => q.system.includes('find the lime widget')), 'planner ran with the raw task');
   });
 }
 
@@ -2461,7 +2458,7 @@ async function memorySuite() {
     assert.strictEqual(reqs[0].messages.length, 1);
     assert.strictEqual(reqs[0].messages[0].role, 'user');
     const t1 = reqs[0].messages[0].content;
-    assert.ok(t1.includes('find hello'), 'task present');
+    assert.ok(reqs[0].system.includes('find hello'), 'task present in cached system prompt');
     assert.match(t1, /nothing yet/, 'empty progress on first turn');
     assert.ok(t1.includes('@e1'), 'current page listing present');
 
@@ -2537,18 +2534,17 @@ async function memorySuite() {
 
   await test('record contracts are shown as progress and auto-complete at target', async () => {
     const contractPlan = JSON.stringify({
-      plan: 'Search job boards and save each complete job record.',
+      task: 'Search job boards and save each complete job record.',
       recordContract: {
         recordName: 'job',
         target: 3,
-        requiredFields: {
+        fields: {
           company: 'Company name',
           title: 'Role title',
           url: 'Direct job listing URL',
           contacts: '1-3 people at the company with name and title',
           dm: '2-3 sentence message',
         },
-        optionalFields: {},
       },
     });
     const reqs = installFakeProvider(
@@ -2564,7 +2560,7 @@ async function memorySuite() {
     const r = await run({
       session,
       task: 'Find 3 solid jobs. For every job, list 1-3 contacts.',
-      config: baseConfig({ plan: { enabled: true } }),
+      config: baseConfig({ expand: { enabled: true } }),
     });
 
     assert.strictEqual(r.status, 'completed', r.error);
@@ -2585,7 +2581,7 @@ async function memorySuite() {
 
   await test('research mode does not auto-complete from saved records', async () => {
     const researchPlan = JSON.stringify({
-      plan: 'Research the options and synthesize the tradeoffs.',
+      task: 'Research the options and synthesize the tradeoffs.',
       taskType: 'research',
       recordContract: null,
     });
@@ -2602,7 +2598,7 @@ async function memorySuite() {
     const r = await run({
       session,
       task: 'Research the best approach.',
-      config: baseConfig({ plan: { enabled: true }, mode: 'research' }),
+      config: baseConfig({ expand: { enabled: true }, mode: 'research' }),
     });
 
     assert.strictEqual(r.status, 'completed', r.error);
@@ -2630,7 +2626,8 @@ async function memorySuite() {
     assert.strictEqual(turn.llmPayload.messages.length, 1);
     assert.ok(turn.llmPayload.estimatedTokens > 0);
     assert.strictEqual(turn.llmPayload.messages[0].role, 'user');
-    assert.ok(turn.llmPayload.messages[0].content.includes('find hello'));
+    // The task now rides in the cached system prompt, not the per-turn message;
+    // the turn payload carries only what changes each turn (here, the page listing).
     assert.ok(turn.llmPayload.messages[0].content.includes('@e1'));
   });
 

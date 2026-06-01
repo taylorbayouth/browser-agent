@@ -258,7 +258,7 @@ The LLM marks task completion by emitting `{ verb: "done", args: { result: "…"
 
 ### Final report
 
-At finish, the loop reads `runs/<id>/saved.md` if it fits `report.rawTokenBudget`; otherwise it reads `saved-index.md`. It hands that evidence, the original task, optional trusted `context`, and the run's **plan of action** (see *Step 0*) to one no-tools report model call — the plan lets the report honor the intended deliverable shape and flag anything the plan called for that the evidence is missing. That model writes `report.md` for the original task, so organization can vary with the assignment instead of being locked to a code template. The prompt tells it to think through the best layout for the specific task and evidence, preserve source URLs and relative `assets/` links, use only saved evidence, call out gaps instead of inventing missing facts, and avoid omitting saved records when raw evidence is available.
+At finish, the loop reads `runs/<id>/saved.md` if it fits `report.rawTokenBudget`; otherwise it reads `saved-index.md`. It hands that evidence, the **task** (Step 0's rewrite, or the raw operator task if Step 0 was off), and optional trusted `context` to one no-tools report model call — the task lets the report honor the intended deliverable shape and flag anything it called for that the evidence is missing. That model writes `report.md` for the task, so organization can vary with the assignment instead of being locked to a code template. The prompt tells it to think through the best layout for the specific task and evidence, preserve source URLs and relative `assets/` links, use only saved evidence, call out gaps instead of inventing missing facts, and avoid omitting saved records when raw evidence is available.
 
 When `saved-index.md` is used, `report.md` becomes summary-oriented rather than comprehensive; raw details remain in `saved.md`. If `report.enabled` is `false`, the report model is unavailable, or it returns no text, the loop writes a compact deterministic fallback report from the same selected evidence. `saved.md` and `saved-index.md` remain on disk either way. The same Markdown is also rendered to `report.html` with `markdown-it` plus a thin page wrapper for link targets, overflow-safe URLs, and optional report framing CSS.
 
@@ -364,7 +364,7 @@ DEFAULTS (lib/config.js)  <  browser-agent.config.json  <  env vars  <  CLI flag
 | `provider` | `openai` | LLM provider (also `BROWSER_AGENT_PROVIDER`). |
 | `model` | `null` | `null` → provider's own default. |
 | `context` | `null` | Optional trusted background (user info, prefs) appended to the system prompt (also `BROWSER_AGENT_CONTEXT`, `--context`/`-c`). `null` → no Context section. |
-| `plan.enabled` | `true` | Run one upfront *Step 0* call that writes a short plan of action, threaded into the planner, reflection, and report (see *Loop semantics § Step 0*). |
+| `expand.enabled` | `true` | Run one upfront *Step 0* call that rewrites the task into one complete instruction, threaded into the planner, reflection, and report (see *Loop semantics § Step 0*). |
 | `plan.provider` | `openai` | Provider for the Step-0 planning call. Independent of the planner. |
 | `mode` | `"auto"` | Task shape: `auto`, `records`, or `research`. `auto` lets Step 0 classify the task. `records` enables a record contract and ledger auto-stop; `research` suppresses record auto-stop. |
 | `plan.model` | `gpt-5.5` | Model for the Step-0 planning call (a stronger model to think before acting). |
@@ -443,15 +443,15 @@ Loop tracks consecutive scrolls with the same direction on the same page. Once `
 
 Loop is the only stateful module. Everything else is pure.
 
-### Step 0: plan of action (`lib/planning.js`)
+### Step 0: task expansion (`lib/planning.js`)
 
-Before the loop begins, the loop makes one **planning call** (`models.plan`, default `gpt-5.5`/`high`, enabled). It turns the bare task into a short prose **plan of action** — how the agent intends to use the web, and what the finished report needs to contain — plus a `taskType` classification. `mode:"auto"` lets Step 0 choose `records` or `research`; `mode:"records"` forces a record task; `mode:"research"` forces synthesis without record-ledger auto-stop. For record tasks, Step 0 also emits a small **record contract**: `recordName`, `target`, `requiredFields`, and `optionalFields`. These are formed from the task and trusted `context` alone, **before any page is seen**. The plan is an *immutable north star*: it is generated once and threaded into three downstream prompts so every stage shares one reading of the task —
+Before the loop begins, the loop makes one **Step-0 call** (`models.expand`, default `gpt-5.5`/`high`, enabled). It **rewrites the bare operator task into one complete, self-contained instruction** — every requirement preserved, gaps filled, the whole thing strengthened for an LLM and phrased in the agent's canonical verbs (`navigate`/`click`/`save_record`/…) — plus a `taskType` classification. `mode:"auto"` lets Step 0 choose `records` or `research`; `mode:"records"` forces a record task; `mode:"research"` forces synthesis without record-ledger auto-stop. For record tasks, Step 0 also emits a small **record contract**: `recordName`, `target`, and a flat `fields` map (everything worth capturing for one record — no required/optional tiers, so a missing field never gates a save). These are formed from the task and trusted `context` alone, **before any page is seen**. The rewritten task replaces the operator's wording everywhere downstream — it is the agent's *one* statement of what to do — and is threaded into three places so every stage shares one reading of the task:
 
-- the **planner's** system prompt, on every turn (it rides inside the cached prefix — see *Prompt construction*),
-- each **reflection** turn (so reflection judges progress against the plan, not just the task), and
+- the **planner's** system prompt, on every turn (it rides inside the cached prefix, and is *not* restated in the per-turn message — see *Prompt construction*),
+- each **reflection** turn (so reflection judges progress against the task), and
 - the final **report** (so the report's structure is pre-committed and the evidence was gathered *for* it).
 
-It is *not* a script: the live page is always ground truth, and mid-run re-routing is the job of reflection, not a rewrite of the plan. The record contract drives only the `save_record` ledger progress shown each turn; it does not make `save_text` evidence count as final output, and it is absent for research tasks. Because Step 0 is built only from trusted inputs (never page content), it carries no prompt-injection surface. A failure here never breaks the run — `runArtifact.plan` and `runArtifact.recordContract` stay `null`, so the run proceeds exactly as if Step 0 were disabled. The plan, task type, and record contract are recorded on the Run artifact.
+It is *not* a rigid script: the live page is always ground truth, and mid-run re-routing is the job of reflection, not a rewrite of the task. The record contract drives only the `save_record` ledger progress shown each turn; it does not make `save_text` evidence count as final output, and it is absent for research tasks. Because Step 0 is built only from trusted inputs (never page content), the rewritten task carries no prompt-injection surface. A failure here never breaks the run — `runArtifact.expandedTask` and `runArtifact.recordContract` stay `null`, and the loop falls back to the **raw operator task verbatim**, so the run proceeds exactly as if Step 0 were disabled. The expanded task, task type, and record contract are recorded on the Run artifact.
 
 ### The loop body
 
@@ -517,7 +517,7 @@ The known limitation: an event log captures actions, navigations, and errors, bu
 
 ### Reflection: the "moment of silence" (`lib/reflect.js`)
 
-The stuck/empty-plan aborts above are blunt: a flailing agent is killed rather than redirected. Reflection inserts a chance to recover *before* those aborts fire. When the loop detects the agent is flailing — `stuckStreak` or `emptyPlanStreak` hitting its threshold — or crosses a budget fraction (`reflect.budgetTurnFraction` of `maxSteps`, fired once), it runs one **reflection turn**: a model call with **no tools and no page listing**, handed the task, the run's plan of action (see *Step 0*), and a clip of the scratchpad (`saved.md`). Stripped of the live page, the model judges its own trajectory and returns a single `<15-word` decision — stay the course, or pivot in concrete action terms.
+The stuck/empty-plan aborts above are blunt: a flailing agent is killed rather than redirected. Reflection inserts a chance to recover *before* those aborts fire. When the loop detects the agent is flailing — `stuckStreak` or `emptyPlanStreak` hitting its threshold — or crosses a budget fraction (`reflect.budgetTurnFraction` of `maxSteps`, fired once), it runs one **reflection turn**: a model call with **no tools and no page listing**, handed the task (Step 0's rewrite — see *Step 0*) and a clip of the scratchpad (`saved.md`). Stripped of the live page, the model judges its own trajectory and returns a single `<15-word` decision — stay the course, or pivot in concrete action terms.
 
 - **Loop-triggered, not a verb.** The model deepest in a loop is the least likely to ask for a pause, so the loop fires it on the signals it already computes; it is not in the action registry.
 - **Its own model.** `reflect.provider`/`reflect.model` are independent of the planner (default `gpt-5.5`), so a cheap planner can pause to think on a stronger model. `null` falls back to the planner's provider/model.
@@ -615,13 +615,13 @@ Each provider's `callModel()` translates these generic tool defs into its native
 const prompt = require('./prompt');
 const actions = require('./actions');
 
-const system = prompt.buildSystemPrompt(actions, config.context, runArtifact.plan);
-// → "You are a browser agent. Available actions: …\n\nPlan of Action (…): …\n\nContext (trusted …): …"
+const system = prompt.buildSystemPrompt(actions, config.context, runArtifact.expandedTask || runArtifact.task);
+// → "You are a browser agent. Available actions: …\n\nTask (…): …\n\nContext (trusted …): …"
 ```
 
 The system prompt is built once per Run — after *Step 0* produces the plan, so the plan rides inside it — and sent as the first message of every model call.
 
-**Optional context and plan.** Two authoritative per-run blocks are appended to the **tail**, after the byte-identical template + action list that form the cacheable prefix (see *Caching seams*) — placing them earlier would invalidate the cache for everything after them. `config.context` (also `BROWSER_AGENT_CONTEXT` / `--context`) is operator-supplied background — who the user is, preferences — and the **plan of action** is the agent's own Step-0 plan for this run. The plan sits *before* context so `context` remains the very last block (nothing cacheable follows it). Each block — header included — is omitted entirely when its value is null/empty, so a disabled/failed Step 0 or absent context changes nothing.
+**Task and context.** Two authoritative per-run blocks are appended to the **tail**, after the byte-identical template + action list that form the cacheable prefix (see *Caching seams*) — placing them earlier would invalidate the cache for everything after them. The **task** is Step 0's rewrite of the operator's request (or the raw task verbatim if Step 0 was off) — the agent's one complete instruction for this run; being immutable, it rides in the cached tail and is *not* restated in each turn's user message. `config.context` (also `BROWSER_AGENT_CONTEXT` / `--context`) is operator-supplied background — who the user is, preferences. The task sits *before* context so `context` remains the very last block (nothing cacheable follows it). Each block — header included — is omitted entirely when its value is null/empty.
 
 ---
 

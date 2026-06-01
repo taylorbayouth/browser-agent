@@ -1,6 +1,6 @@
 {
   "models": {
-    "plan": {
+    "expand": {
       "enabled": true,
       "provider": "openai",
       "model": "gpt-5.5",
@@ -47,7 +47,7 @@
   },
 
   "loop": {
-    "maxSteps": 100,
+    "maxSteps": 200,
     "shortCircuitOnNoChange": true,
     "pollMs": 1500,
     "maxNoChangePolls": 3,
