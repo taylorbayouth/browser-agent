@@ -57,6 +57,7 @@ function parseArgs(argv) {
     else if (a.startsWith('-')) usageError(`unknown option: ${a}`);
     else positional.push(a);
   }
+  if (args.task && positional.length) usageError('pass the task once: --task "..." OR positional words, not both');
   if (!args.task && positional.length) args.task = positional.join(' ');
   args.override = override;
   return args;
@@ -154,6 +155,7 @@ function buildHandoff(runArtifact, config = {}) {
       evidenceSource: runArtifact.reportEvidence?.source || null,
       rawTokens: runArtifact.reportEvidence?.rawTokens ?? null,
       rawTokenBudget: runArtifact.reportEvidence?.rawTokenBudget ?? null,
+      empty: (runArtifact.reportEvidence?.rawTokens ?? 1) === 0,
     },
     artifacts: {
       runDir: artifacts.runDir || null,
