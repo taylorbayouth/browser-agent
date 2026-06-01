@@ -26,6 +26,8 @@ const { buildSystemPrompt } = require('../lib/prompt');
 const { collectRegions, collectPasswordIds, buildSnapshotMaps } = require('../lib/extract');
 const { cleanWebText, decodeHtmlEntities } = require('../lib/text');
 const { markdownToHtml, markdownToHtmlDocument } = require('../lib/markdown');
+const { isConnectionError } = require('../lib/connect');
+const { applyCapabilities } = require('../lib/model');
 
 // ─── tiny sequential runner ──────────────────────────────────────────────────
 // Sequential matters: the loop tests share the injected fake provider, so they
@@ -712,6 +714,16 @@ async function validateSuite() {
     assert.strictEqual(errors.length, 1);
     assert.match(errors[0].error, /actions must be an array/);
   });
+
+  await test('done is accepted without an intent field', () => {
+    const { ok, errors } = validate(
+      [{ kind: 'action', verb: 'done', args: { result: 'answer' }, toolUseId: 'tu_done_1' }],
+      {}, registry,
+    );
+    assert.strictEqual(errors.length, 0, JSON.stringify(errors));
+    assert.strictEqual(ok.length, 1);
+    assert.strictEqual(ok[0].verb, 'done');
+  });
 }
 
 async function executeSuite() {
@@ -1316,6 +1328,35 @@ async function scratchpadSuite() {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  await test('write failure is isolated — run-level warn-once, no throw', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'browser-agent-scratch-'));
+    try {
+      const scratch = createScratchpad({ dir, runId: 'iso' });
+      // Make the assets dir exist but read-only so writeFileSync inside it fails.
+      fs.mkdirSync(scratch.assetsDir, { recursive: true });
+      fs.chmodSync(scratch.assetsDir, 0o555);
+
+      const warnings = [];
+      const origWrite = process.stderr.write.bind(process.stderr);
+      process.stderr.write = (msg, ...rest) => {
+        warnings.push(String(msg));
+        return origWrite(msg, ...rest);
+      };
+      try {
+        // Two saveImage calls — only one warning should be emitted across both.
+        scratch.saveImage({ base64: Buffer.from('a').toString('base64'), title: 'S1' });
+        scratch.saveImage({ base64: Buffer.from('b').toString('base64'), title: 'S2' });
+      } finally {
+        process.stderr.write = origWrite;
+        fs.chmodSync(scratch.assetsDir, 0o755);
+      }
+      const scratchWarnings = warnings.filter(m => m.includes('[scratchpad]'));
+      assert.strictEqual(scratchWarnings.length, 1, 'exactly one warning across multiple failures');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 }
 
 async function saveFileSuite() {
@@ -1339,6 +1380,64 @@ async function logSuite() {
       logger.event({ kind: 'turn' });
       logger.finalize({ status: 'completed', result: null, stats: {} });
       assert.strictEqual(fs.existsSync(logDir), false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('event() appends a timestamped parseable JSON line to latest.jsonl', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'browser-agent-log-'));
+    try {
+      const logger = createLogger({ dir });
+      logger.event({ kind: 'turn', turn: 1 });
+      logger.event({ kind: 'turn', turn: 2 });
+      const lines = fs.readFileSync(logger.turnsPath, 'utf8').trim().split('\n');
+      assert.strictEqual(lines.length, 2);
+      const parsed = JSON.parse(lines[0]);
+      assert.ok(typeof parsed.ts === 'string' && parsed.ts.length > 0, 'ts field present');
+      assert.strictEqual(parsed.kind, 'turn');
+      assert.strictEqual(parsed.turn, 1);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('finalize() writes latest.json and appends a run-final jsonl line', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'browser-agent-log-'));
+    try {
+      const logger = createLogger({ dir });
+      const artifact = { status: 'completed', result: 'done', error: null, stats: { stepCount: 3 } };
+      logger.finalize(artifact);
+      const json = JSON.parse(fs.readFileSync(logger.latestPath, 'utf8'));
+      assert.strictEqual(json.status, 'completed');
+      const lines = fs.readFileSync(logger.turnsPath, 'utf8').trim().split('\n').filter(Boolean);
+      const last = JSON.parse(lines[lines.length - 1]);
+      assert.strictEqual(last.kind, 'run-final');
+      assert.strictEqual(last.status, 'completed');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('write failure emits one warning and does not throw', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'browser-agent-log-'));
+    try {
+      const logger = createLogger({ dir });
+      // Stubs appendFileSync to always throw after the first call (which clears the file).
+      const origAppend = fs.appendFileSync;
+      fs.appendFileSync = () => { throw new Error('disk full'); };
+      const warnings = [];
+      const origWrite = process.stderr.write.bind(process.stderr);
+      process.stderr.write = (msg, ...rest) => { warnings.push(String(msg)); return origWrite(msg, ...rest); };
+      try {
+        logger.event({ kind: 'a' });
+        logger.event({ kind: 'b' });
+      } finally {
+        fs.appendFileSync = origAppend;
+        process.stderr.write = origWrite;
+      }
+      const logWarnings = warnings.filter(m => m.includes('[log]'));
+      assert.strictEqual(logWarnings.length, 1, 'exactly one warning across multiple failures');
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -2033,6 +2132,78 @@ async function loopSuite() {
       config: baseConfig({ loop: { shortCircuitOnNoChange: true, pollMs: 0, maxNoChangePolls: 1, maxStuckRepeats: 2 } }),
     });
     assert.strictEqual(r.status, 'completed', r.error);
+  });
+
+  await test('provider error on a tooled turn sets status:failed and preserves errorType', async () => {
+    const origFake = modelMod.providers.fake;
+    modelMod.providers.fake = {
+      name: 'fake', defaultModel: 'fake-1',
+      async callModel(req) {
+        if (req.tools && req.tools.length > 0) {
+          throw Object.assign(new Error('rate limited'), { type: 'rate_limit' });
+        }
+        return { kind: 'completion', version: '1.0', provider: 'fake', model: 'fake-1', raw: {}, actions: [], text: '', usage: {}, elapsedMs: 0 };
+      },
+    };
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ba-loop-'));
+    try {
+      const r = await run({
+        session: makeFakeSession([makeBrief]),
+        task: 'fail me',
+        config: { ...baseConfig(), scratchpad: { enabled: true, dir } },
+      });
+      assert.strictEqual(r.status, 'failed');
+      assert.strictEqual(r.errorType, 'rate_limit');
+      assert.match(r.error, /rate limited/);
+      assert.ok(fs.existsSync(path.join(dir, r.id, 'report.md')), 'fallback report.md written');
+    } finally {
+      modelMod.providers.fake = origFake;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('done with no saves surfaces report.empty:true in the handoff', async () => {
+    installFakeProvider([[action('done', { args: {} })]]);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ba-loop-'));
+    try {
+      const r = await run({
+        session: makeFakeSession([makeBrief]),
+        task: 'x',
+        config: { ...baseConfig(), scratchpad: { enabled: true, dir } },
+      });
+      assert.strictEqual(r.status, 'completed', r.error);
+      const h = buildHandoff(r, {});
+      assert.strictEqual(h.report.empty, true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('deadLinks are cleared on navigation so the link is clickable on the next page', async () => {
+    const NAV_HREF = 'http://nav.test/';
+    const mkLinkBrief = (url) => () => ({
+      schemaVersion: '2.0', url, title: 'Page', timestamp: '2026-01-01T00:00:00Z',
+      viewport: { width: 1000, height: 800, scrollX: 0, scrollY: 0 },
+      elements: [{ ref: '@e1', role: 'link', name: 'Navigate', url: NAV_HREF, bbox: [100, 200, 200, 30] }],
+      text: [], lookup: { '@e1': 111 }, stats: {},
+    });
+    const reqs = installFakeProvider([
+      [action('click', { ref: '@e1' })],           // turn 1: click the nav link (no navigation)
+      [action('press', { args: { key: 'Tab' } })], // turn 2: brief still same page → deadLinks populated
+      [action('done', { args: {} })],              // turn 3: brief is new page → deadLinks cleared
+    ]);
+    const session = makeFakeSession([
+      mkLinkBrief('http://page-a.test/'),   // turn 1 extract
+      mkLinkBrief('http://page-a.test/'),   // turn 2 extract — same URL → adds to deadLinks
+      mkLinkBrief('http://page-b.test/'),   // turn 3 extract — URL changed → clears deadLinks
+    ]);
+    const r = await run({ session, task: 'nav test', config: baseConfig() });
+    assert.strictEqual(r.status, 'completed', r.error);
+    // Turn 2: model sees the link as dead (deadLinks was populated after turn 1's no-navigation click).
+    assert.match(reqs[1].messages[0].content, /link \(dead\)/, 'link demoted on same page after no-nav click');
+    // Turn 3: after navigation, deadLinks cleared — link is a normal [@e1] clickable target again.
+    assert.doesNotMatch(reqs[2].messages[0].content, /link \(dead\)/, 'link restored after navigation');
+    assert.match(reqs[2].messages[0].content, /\[@e1\]/, 'link has ref again on new page');
   });
 }
 
@@ -3160,6 +3331,50 @@ async function postJSONSuite() {
   });
 }
 
+async function modelCapabilitiesSuite() {
+  console.log('\nmodel capabilities:');
+
+  await test('applyCapabilities strips reasoningEffort when adapter disables it', () => {
+    const mod = { name: 'test', capabilities: { reasoningEffort: false }, callModel: () => {} };
+    const req = { system: 'hi', reasoningEffort: 'high', messages: [] };
+    const out = applyCapabilities(mod, req);
+    assert.strictEqual(out.reasoningEffort, null, 'reasoningEffort nulled out');
+    assert.strictEqual(req.reasoningEffort, 'high', 'original request is untouched');
+    assert.notStrictEqual(out, req, 'returns a new object');
+  });
+
+  await test('applyCapabilities is a no-op when adapter has no capabilities', () => {
+    const mod = { name: 'test', callModel: () => {} };
+    const req = { system: 'hi', reasoningEffort: 'high', messages: [] };
+    const out = applyCapabilities(mod, req);
+    assert.strictEqual(out, req, 'same object returned when nothing to strip');
+  });
+}
+
+async function connectionErrorSuite() {
+  console.log('\nisConnectionError:');
+
+  const cases = [
+    ['WebSocket connection closed', true],
+    ['Session closed', true],
+    ['ECONNRESET', true],
+    ['ECONNREFUSED: connection refused', true],
+    ['Protocol error (Network.enable): Session closed', true],
+    ['some unrelated error', false],
+    ['TypeError: Cannot read property', false],
+  ];
+  for (const [msg, expected] of cases) {
+    await test(`isConnectionError: "${msg.slice(0, 40)}" → ${expected}`, () => {
+      const err = Object.assign(new Error(msg));
+      assert.strictEqual(isConnectionError(err), expected);
+    });
+  }
+  await test('isConnectionError: err.code ECONNRESET → true', () => {
+    const err = Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' });
+    assert.strictEqual(isConnectionError(err), true);
+  });
+}
+
 // ─── main ────────────────────────────────────────────────────────────────────
 
 (async () => {
@@ -3191,6 +3406,8 @@ async function postJSONSuite() {
   await cacheSuite();
   await normalizeUrlSuite();
   await postJSONSuite();
+  await modelCapabilitiesSuite();
+  await connectionErrorSuite();
   console.log(`\n${passed + failed} tests: ${passed} passed, ${failed} failed`);
   if (failed > 0) process.exitCode = 1;
 })();
