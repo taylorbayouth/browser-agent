@@ -2239,6 +2239,47 @@ async function planSuite() {
     assert.strictEqual(parsed.recordContract.target, 2);
   });
 
+  await test('parsePlanResponse extracts and cleans the requirements checklist', () => {
+    const { parsePlanResponse } = require('../lib/planning');
+    const parsed = parsePlanResponse(JSON.stringify({
+      task: 'Find vendors and compare them.',
+      requirements: [
+        '1. Find 3 vendors and save one record each.',   // leading number is stripped
+        '  - Compare them on price and SLA.  ',           // bullet + surrounding space stripped
+        '',                                                // empty dropped
+        'Find 3 vendors and save one record each.',        // duplicate dropped
+      ],
+    }));
+    assert.deepStrictEqual(parsed.requirements, [
+      'Find 3 vendors and save one record each.',
+      'Compare them on price and SLA.',
+    ]);
+  });
+
+  await test('parsePlanResponse: missing/invalid requirements yields an empty list', () => {
+    const { parsePlanResponse } = require('../lib/planning');
+    assert.deepStrictEqual(parsePlanResponse(JSON.stringify({ task: 'do a thing' })).requirements, []);
+    assert.deepStrictEqual(parsePlanResponse('not json at all').requirements, []);
+    assert.deepStrictEqual(parsePlanResponse('').requirements, []);
+  });
+
+  await test('buildSystemPrompt: requirements sit between task and context, context stays last', () => {
+    const reg = { click: registry.click, done: registry.done };
+    const task = 'Find 3 vendors and compare them.';
+    const ctx = 'The user is Taylor.';
+    const reqs = ['Find 3 vendors and save one record each.', 'Compare them on price and SLA.'];
+    const prompt = buildSystemPrompt(reg, ctx, task, reqs);
+    assert.ok(prompt.includes('Requirements (your checklist'), 'requirements header present');
+    assert.ok(prompt.includes('1. Find 3 vendors'), 'requirements are numbered');
+    assert.ok(prompt.includes('2. Compare them on price'), 'every requirement present');
+    assert.ok(prompt.endsWith(ctx), 'context is still the very last block');
+    assert.ok(prompt.indexOf('Task (') < prompt.indexOf('Requirements ('), 'task precedes requirements');
+    assert.ok(prompt.indexOf('Requirements (') < prompt.indexOf('Context ('), 'requirements precede context');
+    // An empty/absent list is omitted entirely, leaving the prompt byte-identical.
+    assert.strictEqual(buildSystemPrompt(reg, ctx, task, []), buildSystemPrompt(reg, ctx, task));
+    assert.strictEqual(buildSystemPrompt(reg, ctx, task, null), buildSystemPrompt(reg, ctx, task));
+  });
+
   await test('buildSystemPrompt: task sits before context, context stays last', () => {
     const reg = { click: registry.click, done: registry.done };
     const base = buildSystemPrompt(reg);
@@ -2532,9 +2573,13 @@ async function memorySuite() {
     assert.ok(t2.length < 5000, 'preview should not dump the full saved note');
   });
 
-  await test('record contracts are shown as progress and auto-complete at target', async () => {
+  await test('record contracts show progress but do not auto-stop — the model finishes with done', async () => {
     const contractPlan = JSON.stringify({
-      task: 'Search job boards and save each complete job record.',
+      requirements: [
+        'Find 3 solid jobs and save one record each.',
+        'For every job, capture 1-3 contacts and draft a message.',
+      ],
+      task: 'Search job boards and save each complete job record, with contacts and a message.',
       recordContract: {
         recordName: 'job',
         target: 3,
@@ -2552,7 +2597,10 @@ async function memorySuite() {
         [action('save_record', { args: { content: 'Acme — Head of Product', summary: 'Acme job' } })],
         [action('save_record', { args: { content: 'Beta — Senior PM', summary: 'Beta job' } })],
         [action('save_record', { args: { content: 'Cygnus — CPO', summary: 'Cygnus job' } })],
-        [action('click', { ref: '@e1' })],
+        // Target is met after the 3rd record, but the run keeps going: the model still
+        // has follow-on work and ends it itself with done. The old auto-stop would have
+        // cut the run off here and never reached this turn.
+        [action('done', { args: { result: 'Collected 3 jobs with contacts' } })],
       ],
       [contractPlan],
     );
@@ -2564,19 +2612,28 @@ async function memorySuite() {
     });
 
     assert.strictEqual(r.status, 'completed', r.error);
-    assert.strictEqual(r.result, 'Collected requested 3 job records.');
-    assert.deepStrictEqual(r.steps.map(s => s.action.verb), ['save_record', 'save_record', 'save_record']);
+    assert.strictEqual(r.result, 'Collected 3 jobs with contacts');
+    assert.deepStrictEqual(r.steps.map(s => s.action.verb), ['save_record', 'save_record', 'save_record', 'done']);
     assert.strictEqual(r.records.length, 3);
     assert.strictEqual(r.recordContract.recordName, 'job');
     assert.strictEqual(r.recordContract.target, 3);
+    assert.deepStrictEqual(r.requirements, [
+      'Find 3 solid jobs and save one record each.',
+      'For every job, capture 1-3 contacts and draft a message.',
+    ]);
 
     const plannerReqs = reqs.filter(q => q.tools && q.tools.length);
-    assert.strictEqual(plannerReqs.length, 3, 'loop should stop before the extra click turn');
+    assert.strictEqual(plannerReqs.length, 4, 'reaching the record target must not end the run — the model calls done');
     assert.ok(plannerReqs[0].messages[0].content.includes('Record target: 3 job records.'));
     assert.ok(plannerReqs[0].messages[0].content.includes('Saved records: 0/3.'));
     assert.ok(plannerReqs[1].messages[0].content.includes('Saved records: 1/3.'));
     assert.ok(plannerReqs[2].messages[0].content.includes('Saved records: 2/3.'));
+    assert.ok(plannerReqs[3].messages[0].content.includes('Saved records: 3/3.'));
+    assert.ok(plannerReqs[3].messages[0].content.includes('Record target reached'));
     assert.ok(plannerReqs[1].messages[0].content.includes('record 1/3'));
+    // The immutable requirements checklist rides in the cached system prompt every turn.
+    assert.ok(plannerReqs[0].system.includes('Requirements (your checklist'));
+    assert.ok(plannerReqs[0].system.includes('2. For every job, capture 1-3 contacts'));
   });
 
   await test('research mode does not auto-complete from saved records', async () => {
