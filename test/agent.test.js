@@ -2694,6 +2694,7 @@ async function visionDispatchSuite() {
       const out = await visionMod.describe({ imageBase64: 'BASE64', mimeType: 'image/jpeg', hint: 'the button' });
       assert.strictEqual(seen.model, 'gpt-5.4-mini', 'config model forwarded to the adapter');
       assert.strictEqual(seen.imageBase64, 'BASE64');
+      assert.strictEqual(seen.cacheKey, 'browser-agent:vision');
       assert.strictEqual(seen.maxTokens, 1024, 'config maxTokens forwarded');
       assert.match(seen.prompt, /Focus especially on: the button/, 'hint folded into prompt');
       assert.deepStrictEqual(out, { summary: 'a login page', description: 'full detail' });
@@ -2729,8 +2730,10 @@ async function cacheSuite() {
     const origFetch = global.fetch;
     const origKey = process.env.OPENAI_API_KEY;
     const origRetention = process.env.OPENAI_PROMPT_CACHE_RETENTION;
+    const origRetentionModels = process.env.OPENAI_PROMPT_CACHE_RETENTION_MODELS;
     process.env.OPENAI_API_KEY = 'test-key';
     process.env.OPENAI_PROMPT_CACHE_RETENTION = '24h';
+    process.env.OPENAI_PROMPT_CACHE_RETENTION_MODELS = 'gpt-5.4-mini';
     const captured = [];
     global.fetch = async (url, opts) => {
       captured.push({ url, body: JSON.parse(opts.body) });
@@ -2760,6 +2763,38 @@ async function cacheSuite() {
       global.fetch = origFetch;
       if (origKey === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = origKey;
       if (origRetention === undefined) delete process.env.OPENAI_PROMPT_CACHE_RETENTION; else process.env.OPENAI_PROMPT_CACHE_RETENTION = origRetention;
+      if (origRetentionModels === undefined) delete process.env.OPENAI_PROMPT_CACHE_RETENTION_MODELS; else process.env.OPENAI_PROMPT_CACHE_RETENTION_MODELS = origRetentionModels;
+    }
+  });
+
+  await test('openai: prompt cache retention is gated by model allowlist', async () => {
+    const openai = require('../lib/providers/openai');
+    const origFetch = global.fetch;
+    const origKey = process.env.OPENAI_API_KEY;
+    const origRetention = process.env.OPENAI_PROMPT_CACHE_RETENTION;
+    const origRetentionModels = process.env.OPENAI_PROMPT_CACHE_RETENTION_MODELS;
+    process.env.OPENAI_API_KEY = 'test-key';
+    process.env.OPENAI_PROMPT_CACHE_RETENTION = '24h';
+    delete process.env.OPENAI_PROMPT_CACHE_RETENTION_MODELS;
+    let captured;
+    global.fetch = async (url, opts) => {
+      captured = JSON.parse(opts.body);
+      return {
+        ok: true, status: 200,
+        json: async () => ({ choices: [{ message: { content: 'ok' } }], usage: {} }),
+        text: async () => '',
+        headers: { get: () => null },
+      };
+    };
+    try {
+      await openai.callModel({ system: 's', tools: [], messages: [{ role: 'user', content: 'hi' }], cacheKey: 'run-1' });
+      assert.strictEqual(captured.prompt_cache_key, 'run-1', 'cache key is still sent');
+      assert.strictEqual('prompt_cache_retention' in captured, false, 'retention is omitted without an allowlist match');
+    } finally {
+      global.fetch = origFetch;
+      if (origKey === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = origKey;
+      if (origRetention === undefined) delete process.env.OPENAI_PROMPT_CACHE_RETENTION; else process.env.OPENAI_PROMPT_CACHE_RETENTION = origRetention;
+      if (origRetentionModels === undefined) delete process.env.OPENAI_PROMPT_CACHE_RETENTION_MODELS; else process.env.OPENAI_PROMPT_CACHE_RETENTION_MODELS = origRetentionModels;
     }
   });
 }

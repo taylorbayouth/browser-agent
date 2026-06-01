@@ -78,6 +78,7 @@ export interface ModelRequest {
   reasoningEffort?: ReasoningEffort | null;
   /** Per-call output-token cap. Falls back to the adapter's own default. */
   maxTokens?: number;
+  timeoutMs?: number;
   signal?: AbortSignal;
 }
 
@@ -88,7 +89,9 @@ export interface VisionRequest {
   prompt: string;
   imageBase64: string;
   mimeType: string;
+  cacheKey?: string;
   maxTokens?: number;
+  timeoutMs?: number;
   signal?: AbortSignal;
 }
 
