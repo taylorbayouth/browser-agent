@@ -53,6 +53,7 @@ function parseArgs(argv) {
     else if (a === '--mode') override.mode = value(argv, i++, a);
     else if (a === '--context' || a === '-c') override.context = value(argv, i++, a);
     else if (a === '--executor') override.executor.backend = value(argv, i++, a);
+    else if (a === '--verbose' || a === '-v') override.verbose = true;
     else if (a === '--help' || a === '-h') { printHelp(); process.exit(0); }
     else if (a.startsWith('-')) usageError(`unknown option: ${a}`);
     else positional.push(a);
@@ -79,6 +80,8 @@ Options:
                                preferences). Injected at the end of the system
                                prompt. Omit for none.
   --executor <os|cdp>          Input backend. Default 'os' uses browser-input (macOS).
+  --verbose, -v                Print system + user prompts for each phase (planning,
+                               loop, reflect, report). DOM refs are omitted.
   --help, -h                   Show this help
 
 Config file:
