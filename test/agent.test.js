@@ -21,7 +21,7 @@ const { estimateTokens } = require('../lib/tokens');
 const shared = require('../lib/providers/_shared');
 const { normalizeUrl, back, clickablePoint, bestQuadRect } = require('../lib/executors/page');
 const { createScratchpad, filenameStemFromHint } = require('../lib/scratchpad');
-const { buildHandoff } = require('../agent');
+const { buildHandoff, parseArgs, normalizeShowReport } = require('../agent');
 const { buildSystemPrompt } = require('../lib/prompt');
 const { collectRegions, collectPasswordIds, buildSnapshotMaps, hiddenSourceUrl, setHiddenSourceUrl } = require('../lib/extract');
 const { cleanWebText, decodeHtmlEntities } = require('../lib/text');
@@ -1278,6 +1278,7 @@ async function scratchpadSuite() {
     const html = markdownToHtml(`URL: ${url}]`);
     const doc = markdownToHtmlDocument(`URL: ${url}]`);
     assert.ok(html.includes(`href="${url}"`));
+    assert.ok(html.includes('>https://example.t...<'));
     assert.ok(html.includes('target="_blank"'));
     assert.ok(html.includes('</a>]'), 'trailing bracket stays outside link');
     assert.ok(doc.includes('overflow-wrap:anywhere'));
@@ -1377,6 +1378,7 @@ async function scratchpadSuite() {
       const html = fs.readFileSync(scratch.reportHtmlPath, 'utf8');
       assert.ok(html.includes('<h1>Report</h1>'));
       assert.ok(html.includes('href="https://example.test/a?x=1&amp;y=2"'));
+      assert.ok(html.includes('>https://example.t...<'));
       assert.ok(html.includes('target="_blank"'));
       assert.ok(html.includes('rel="noopener noreferrer"'));
       assert.ok(html.includes('<main class="handoff">'));
@@ -1500,6 +1502,21 @@ async function agentCliSuite() {
       estimatedPromptTokens: 500,
     });
     assert.strictEqual(out.error, null);
+  });
+
+  await test('parseArgs accepts --show-report and keeps it out of config overrides', () => {
+    const parsed = parseArgs(['--show-report', 'tab', '--provider', 'fake', 'collect profiles']);
+    assert.strictEqual(parsed.task, 'collect profiles');
+    assert.strictEqual(parsed.showReport, 'tab');
+    assert.strictEqual(parsed.override.models.primary.provider, 'fake');
+    assert.strictEqual(parsed.override.showReport, undefined);
+  });
+
+  await test('normalizeShowReport accepts supported modes and empty values', () => {
+    assert.strictEqual(normalizeShowReport(), null);
+    assert.strictEqual(normalizeShowReport('current'), 'current');
+    assert.strictEqual(normalizeShowReport('tab'), 'tab');
+    assert.strictEqual(normalizeShowReport('window'), 'window');
   });
 }
 
@@ -2793,7 +2810,7 @@ async function memorySuite() {
 
     const t3 = reqs[2].messages[0].content;
     assert.match(t3, /1\. clicked "Search" — intent: open noisy result URL/);
-    assert.match(t3, /page navigated to https:\/\/example\.test\/results\?q=browser\+agent/);
+    assert.match(t3, /page navigated to https:\/\/example\.t\.\.\./);
     assert.match(t3, /selected "Welcome" — intent: read heading — selected: "Welcome"/);
     assert.ok(!t3.includes('utm_source'), 'history should drop tracking params');
     assert.ok(!t3.includes('fbclid'), 'history should drop click ids');
@@ -2868,7 +2885,7 @@ async function memorySuite() {
     const r = await run({ session, task: 'go', config: baseConfig() });
     assert.strictEqual(r.status, 'completed', r.error);
     const t2 = reqs[1].messages[0].content;
-    assert.match(t2, /navigated to http:\/\/example\.test\/b/);
+    assert.match(t2, /navigated to http:\/\/example\.te\.\.\./);
     assert.match(t2, /clicked "Search"/);
   });
 
