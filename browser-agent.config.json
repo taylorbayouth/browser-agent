@@ -68,7 +68,6 @@
 
   "view": {
     "includeText": true,
-    "includeCoords": true,
     "maxTextChars": 200,
     "dedupeText": true
   },

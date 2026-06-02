@@ -14,14 +14,14 @@ Browser Agent takes the fourth path.
 
 It drives the Chrome binary you already have, reads the fully rendered page, and
 rebuilds a compact agent-native map: controls, text, unreadable visual regions,
-state, coordinates, and scroll context. Not the raw DOM. Not a screenshot loop.
+state, and scroll context. Not the raw DOM. Not a screenshot loop.
 A small "toy DOM" made for reasoning and action.
 
 The model gets the page like this:
 
 ```text
-[@t7]   heading     "Trending JavaScript repositories"       (322,151)
-[@e14]  link        "facebook / react"                       (214,241)
+[@t7]   heading     "Trending JavaScript repositories"
+[@e14]  link        "facebook / react"
 [@t18]  StaticText  "The library for web and native user interfaces."
 [@t23]  StaticText  "230,000"
 [@t24]  StaticText  "174 stars today"

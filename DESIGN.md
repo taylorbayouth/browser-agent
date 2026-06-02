@@ -99,7 +99,7 @@ What actually goes into the prompt. No `lookup` (executor-only). Deterministic o
   "url": "https://example.com/page",
   "title": "Page title",
   "viewport": { "width": …, "height": …, "scrollY": …, "contentHeight": … },
-  "listing": "[@t1]  heading  \"Sign in\"  (390,118)\n[@t2]  label  \"Email\"  (270,168)\n[@e1]  textbox  \"Email\"  (390,196)\n…"
+  "listing": "[@t1]  heading  \"Sign in\"\n[@t2]  label  \"Email\"\n[@e1]  textbox  \"Email\"\n…"
 }
 ```
 
@@ -109,11 +109,10 @@ The `listing` is a compact, fixed-width-ish text format optimized for LLM tokeni
 
 - **Interleaved by reading order.** Interactive elements (`[@e]`) and text nodes (`[@t]`) are merged into one list sorted top-to-bottom, left-to-right (rows banded by ~10px, then by x), so a label sits next to the field it describes. `@t` lines are primarily read-only grounding, but can be a `click` or `selectText` target (e.g. clickable text inside a container); the validator still rejects them for `type`.
 - **`view.includeText`** (default true) — interleave text nodes at all.
-- **`view.includeCoords`** (default true) — append a rounded `(x,y)` center per line so the model can disambiguate repeated controls.
 - **`view.maxTextChars`** (default 200) — truncate long text-node names.
 - **`view.dedupeText`** (default true) — collapse *consecutive* identical text nodes (reset by any element), so adjacent AX duplication is removed but spatially-separated repeats — e.g. per-row prices — are kept.
 
-Coordinates are shown but **not** hashed (`briefHash` excludes bbox), so enabling them doesn't affect the no-change short-circuit.
+Bboxes are used internally for reading order, clicking, and cropped screenshots, but they are not shown in the LLM listing and are not hashed.
 
 ### Action
 

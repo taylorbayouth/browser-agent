@@ -149,7 +149,7 @@ const baseConfig = (overrides = {}) => ({
   context: overrides.context ?? null,
   loop: { maxSteps: 10, shortCircuitOnNoChange: false, pollMs: 0, maxNoChangePolls: 1, maxEmptyPlans: 3, ...(overrides.loop || {}) },
   settle: { afterActionMs: 0, maxMs: 0 },
-  view: { includeText: true, includeCoords: true, maxTextChars: 200, dedupeText: true },
+  view: { includeText: true, maxTextChars: 200, dedupeText: true },
   executor: { backend: 'cdp' },
   log: { enabled: false },
 });
@@ -159,23 +159,18 @@ const baseConfig = (overrides = {}) => ({
 async function reduceSuite() {
   console.log('\nreduce:');
 
-  await test('interleaves @e and @t in reading order with coords', () => {
-    const v = reduce(makeBrief(), { includeText: true, includeCoords: true });
+  await test('interleaves @e and @t in reading order without coordinates', () => {
+    const v = reduce(makeBrief(), { includeText: true });
     const lines = v.listing.split('\n');
     assert.ok(lines[0].includes('@t1'), 'heading (y=50) sorts first');
     assert.ok(lines[1].includes('@e1'), 'textbox (y=200) sorts second');
-    assert.match(lines[1], /\(250,220\)/, 'appends rounded (x,y) center');
+    assert.ok(!/\(\d+,\d+\)/.test(v.listing), 'no coords expected');
   });
 
   await test('includeText:false drops @t lines', () => {
     const v = reduce(makeBrief(), { includeText: false });
     assert.ok(!v.listing.includes('@t1'));
     assert.ok(v.listing.includes('@e1'));
-  });
-
-  await test('includeCoords:false omits coordinates', () => {
-    const v = reduce(makeBrief(), { includeCoords: false });
-    assert.ok(!/\(\d+,\d+\)/.test(v.listing), 'no coords expected');
   });
 
   await test('marks the focused element and carries url/title', () => {
@@ -247,14 +242,14 @@ async function reduceSuite() {
       text: [{ ref: '@t1', role: 'heading', name: 'Sales', bbox: [0, 10, 100, 20] }],
       regions: [{ ref: '@r1', role: 'canvas', bbox: [0, 100, 640, 480], inViewport: true }],
     });
-    const v = reduce(brief, { includeText: true, includeCoords: true });
+    const v = reduce(brief, { includeText: true });
     const lines = v.listing.split('\n');
     assert.ok(lines[0].includes('@t1'), 'heading (y=10) sorts above the canvas (y=100)');
     const region = lines.find(l => l.includes('[@r1]'));
     assert.ok(region, 'region line present with its @r ref');
     assert.ok(region.includes('canvas') && region.includes('640×480'), 'role and dimensions shown');
     assert.ok(region.includes('take_screenshot @r1'), 'points the model at a cropped screenshot of this ref');
-    assert.match(region, /\(320,340\)/, 'center coords appended');
+    assert.ok(!/\(\d+,\d+\)/.test(region), 'region line omits coordinates');
   });
 
   await test('computeBriefHash: regions bust the hash, position does not', () => {
@@ -960,12 +955,12 @@ async function configSuite() {
   await test('deepMerge preserves sibling defaults and skips undefined overrides', () => {
     const merged = deepMerge(DEFAULTS, {
       loop: { maxSteps: 7, pollMs: undefined },
-      view: { includeCoords: false },
+      view: { maxTextChars: 80 },
     });
     assert.strictEqual(merged.loop.maxSteps, 7);
     assert.strictEqual(merged.loop.pollMs, DEFAULTS.loop.pollMs);
     assert.strictEqual(merged.loop.shortCircuitOnNoChange, DEFAULTS.loop.shortCircuitOnNoChange);
-    assert.strictEqual(merged.view.includeCoords, false);
+    assert.strictEqual(merged.view.maxTextChars, 80);
     assert.strictEqual(merged.executor.backend, DEFAULTS.executor.backend);
   });
 
