@@ -859,7 +859,7 @@ async function validateSuite() {
     assert.match(errors[0].error, /not present in current snapshot/);
   });
 
-  await test('only take_screenshot accepts an @r ref; click/select_text reject it', () => {
+  await test('only visual read/save actions accept an @r ref; click/select_text reject it', () => {
     const lookup = { '@r1': 333 };
     for (const verb of ['click', 'select_text']) {
       const { ok, errors } = validate([action(verb, { ref: '@r1' })], lookup, registry);
