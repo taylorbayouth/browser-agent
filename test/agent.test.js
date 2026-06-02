@@ -23,7 +23,7 @@ const { normalizeUrl, back, clickablePoint, bestQuadRect } = require('../lib/exe
 const { createScratchpad, filenameStemFromHint } = require('../lib/scratchpad');
 const { buildHandoff } = require('../agent');
 const { buildSystemPrompt } = require('../lib/prompt');
-const { collectRegions, collectPasswordIds, buildSnapshotMaps } = require('../lib/extract');
+const { collectRegions, collectPasswordIds, buildSnapshotMaps, hiddenSourceUrl, setHiddenSourceUrl } = require('../lib/extract');
 const { cleanWebText, decodeHtmlEntities } = require('../lib/text');
 const { markdownToHtml, markdownToHtmlDocument } = require('../lib/markdown');
 
@@ -478,6 +478,8 @@ async function regionSuite() {
     const regions = collectRegions(snapshot, maps, viewport, {});
     assert.deepStrictEqual(regions.map(r => r.role), ['image']);
     assert.strictEqual(regions[0].backendNodeId, 401);
+    assert.strictEqual(hiddenSourceUrl(regions[0]), 'https://cdn.test/profile.jpg');
+    assert.ok(!Object.keys(regions[0]).includes('__browserAgentSourceUrl'), 'source URL stays out of serialized region metadata');
   });
 
   await test('collectPasswordIds: finds <input type=password>, ignores other inputs/tags', () => {
@@ -2157,8 +2159,10 @@ async function loopSuite() {
 
   await test('save_image promotes cached visual evidence into the manifest', async () => {
     const visionMod = require('../lib/vision');
+    const { clearVisualEvidenceCache } = require('../lib/visual_enrichment');
     const origClassify = visionMod.classifyVisualEvidence;
     const base64 = Buffer.from('cat image bytes').toString('base64');
+    clearVisualEvidenceCache();
     visionMod.classifyVisualEvidence = async () => ({ kind: 'visual', description: 'Photo of a black cat', text: '' });
     installFakeProvider([
       [action('save_image', { ref: '@v1', args: { hint: 'cat photo' } })],
@@ -2190,6 +2194,60 @@ async function loopSuite() {
       assert.strictEqual(fs.readFileSync(savedPath).toString('utf8'), 'cat image bytes');
     } finally {
       visionMod.classifyVisualEvidence = origClassify;
+      clearVisualEvidenceCache();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('save_image prefers original bytes for URL-backed visual evidence', async () => {
+    const visionMod = require('../lib/vision');
+    const { clearVisualEvidenceCache } = require('../lib/visual_enrichment');
+    const origClassify = visionMod.classifyVisualEvidence;
+    const cropBase64 = Buffer.from('cropped cat bytes').toString('base64');
+    const originalBase64 = Buffer.from('original cat bytes').toString('base64');
+    clearVisualEvidenceCache();
+    visionMod.classifyVisualEvidence = async () => ({ kind: 'visual', description: 'Profile photo of a black cat', text: '' });
+    installFakeProvider([
+      [action('save_image', { ref: '@v1', args: { hint: 'cat profile' } })],
+      [action('done', { args: { result: 'ok' } })],
+    ]);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'browser-agent-run-'));
+    try {
+      const region = setHiddenSourceUrl(
+        { ref: '@r1', role: 'image', bbox: { x: 0, y: 0, width: 100, height: 100 }, inViewport: true },
+        'https://cdn.test/profile.jpg',
+      );
+      const session = makeFakeSession([makeBrief({
+        elements: [],
+        text: [],
+        regions: [region],
+        lookup: { '@r1': 11 },
+      })]);
+      session.client.Page = {
+        captureScreenshot: async () => ({ data: cropBase64 }),
+        getFrameTree: async () => ({ frameTree: { frame: { id: 'frame-1' } } }),
+        getResourceContent: async ({ frameId, url }) => {
+          assert.strictEqual(frameId, 'frame-1');
+          assert.strictEqual(url, 'https://cdn.test/profile.jpg');
+          return { content: originalBase64, base64Encoded: true };
+        },
+      };
+      const r = await run({
+        session,
+        task: 'save cat profile image',
+        config: { ...baseConfig(), scratchpad: { enabled: true, dir } },
+      });
+      assert.strictEqual(r.status, 'completed', r.error);
+      const manifest = JSON.parse(fs.readFileSync(r.artifacts.savedManifestPath, 'utf8'));
+      const saved = manifest.unassigned[0];
+      assert.strictEqual(saved.kind, 'image');
+      assert.strictEqual(saved.metadata.description, 'Profile photo of a black cat');
+      assert.strictEqual(saved.metadata.source_url, 'https://cdn.test/profile.jpg');
+      const savedPath = path.join(r.artifacts.assetsDir, saved.file_name);
+      assert.strictEqual(fs.readFileSync(savedPath).toString('utf8'), 'original cat bytes');
+    } finally {
+      visionMod.classifyVisualEvidence = origClassify;
+      clearVisualEvidenceCache();
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
