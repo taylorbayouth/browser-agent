@@ -26,6 +26,7 @@ const { buildSystemPrompt } = require('../lib/prompt');
 const { collectRegions, collectPasswordIds, buildSnapshotMaps, hiddenSourceUrl, setHiddenSourceUrl } = require('../lib/extract');
 const { cleanWebText, decodeHtmlEntities } = require('../lib/text');
 const { markdownToHtml, markdownToHtmlDocument } = require('../lib/markdown');
+const { resizeDimensions } = require('../lib/image');
 
 // ─── tiny sequential runner ──────────────────────────────────────────────────
 // Sequential matters: the loop tests share the injected fake provider, so they
@@ -1131,12 +1132,12 @@ async function launchSuite() {
 async function scratchpadSuite() {
   console.log('\nscratchpad:');
 
-  await test('disabled scratchpad performs no filesystem writes', () => {
+  await test('disabled scratchpad performs no filesystem writes', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'browser-agent-scratch-'));
     try {
       const scratch = createScratchpad({ enabled: false, dir, runId: 'x' });
       assert.strictEqual(scratch.saveText({ content: 'Nope' }), null);
-      assert.strictEqual(scratch.saveImage({ base64: Buffer.from('x').toString('base64') }), null);
+      assert.strictEqual(await scratch.saveImage({ base64: Buffer.from('x').toString('base64') }), null);
       assert.strictEqual(scratch.writeReport('report'), null);
       assert.strictEqual(scratch.readManifest(), '');
       assert.deepStrictEqual(fs.readdirSync(dir), []);
@@ -1145,12 +1146,12 @@ async function scratchpadSuite() {
     }
   });
 
-  await test('saveText writes manifest entries and saveImage persists assets', () => {
+  await test('saveText writes manifest entries and saveImage persists assets', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'browser-agent-scratch-'));
     try {
       const scratch = createScratchpad({ dir, runId: 'run-1' });
       const text = scratch.saveText({ content: 'Full captured text', summary: 'Captured note', url: 'https://example.test/a' });
-      const image = scratch.saveImage({ base64: Buffer.from('png bytes').toString('base64'), title: 'Shot' });
+      const image = await scratch.saveImage({ base64: Buffer.from('png bytes').toString('base64'), title: 'Shot' });
       const manifest = JSON.parse(scratch.readManifest());
 
       assert.strictEqual(text.path, scratch.manifestPath);
@@ -1178,12 +1179,12 @@ async function scratchpadSuite() {
     }
   });
 
-  await test('saved text, images, and files include optional reason metadata', () => {
+  await test('saved text, images, and files include optional reason metadata', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'browser-agent-scratch-'));
     try {
       const scratch = createScratchpad({ dir, runId: 'run-1' });
       scratch.saveText({ content: 'Fact', summary: 'Fact saved', reason: 'preserve fact before navigating' });
-      scratch.saveImage({ base64: Buffer.from('png').toString('base64'), reason: 'read chart labels' });
+      await scratch.saveImage({ base64: Buffer.from('png').toString('base64'), reason: 'read chart labels' });
       scratch.saveAsset({ filename: 'report.pdf', base64: Buffer.from('pdf').toString('base64'), reason: 'keep source document' });
       const manifest = JSON.parse(scratch.readManifest());
 
@@ -1197,11 +1198,11 @@ async function scratchpadSuite() {
     }
   });
 
-  await test('saveRecord groups current unassigned saves and leaves later saves unassigned', () => {
+  await test('saveRecord groups current unassigned saves and leaves later saves unassigned', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'browser-agent-scratch-'));
     try {
       const scratch = createScratchpad({ dir, runId: 'run-1' });
-      scratch.saveImage({
+      await scratch.saveImage({
         base64: Buffer.from('png').toString('base64'),
         description: 'A product screenshot',
         metadata: { ref: '@r1', role: 'image' },
@@ -1290,11 +1291,11 @@ async function scratchpadSuite() {
     assert.strictEqual(filenameStemFromHint('---'), null);
   });
 
-  await test('hinted screenshots include slug and supplied id', () => {
+  await test('hinted screenshots include slug and supplied id', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'browser-agent-scratch-'));
     try {
       const scratch = createScratchpad({ dir, runId: 'run-1' });
-      const image = scratch.saveImage({
+      const image = await scratch.saveImage({
         base64: Buffer.from('jpg bytes').toString('base64'),
         hint: 'Read chart labels',
         id: 7,
@@ -1305,6 +1306,45 @@ async function scratchpadSuite() {
       const item = JSON.parse(scratch.readManifest()).unassigned[0];
       assert.strictEqual(item.file_name, 'read-chart-labels-screenshot-7.jpg');
       assert.strictEqual(item.metadata.title, 'Read chart labels screenshot');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('resizeDimensions scales by average side without enlarging', () => {
+    assert.deepStrictEqual(resizeDimensions(800, 200, 400), { width: 640, height: 160 });
+    assert.deepStrictEqual(resizeDimensions(1200, 800, 400), { width: 480, height: 320 });
+    assert.strictEqual(resizeDimensions(300, 500, 400), null);
+  });
+
+  await test('saveImage resizes large images to target average side', async () => {
+    let sharp;
+    try { sharp = require('sharp'); } catch { return; }
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'browser-agent-scratch-'));
+    try {
+      const scratch = createScratchpad({ dir, runId: 'run-1' });
+      const original = await sharp({
+        create: {
+          width: 800,
+          height: 200,
+          channels: 3,
+          background: '#336699',
+        },
+      }).png().toBuffer();
+      const image = await scratch.saveImage({
+        base64: original.toString('base64'),
+        hint: 'Wide image',
+        resize: { targetAverageSidePx: 400 },
+      });
+      const meta = await sharp(image.path).metadata();
+      assert.strictEqual(meta.width, 640);
+      assert.strictEqual(meta.height, 160);
+      const item = JSON.parse(scratch.readManifest()).unassigned[0];
+      assert.strictEqual(item.metadata.original_width, 800);
+      assert.strictEqual(item.metadata.original_height, 200);
+      assert.strictEqual(item.metadata.width, 640);
+      assert.strictEqual(item.metadata.height, 160);
+      assert.deepStrictEqual(resizeDimensions(800, 200, 400), { width: 640, height: 160 });
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -2140,6 +2180,41 @@ async function loopSuite() {
       assert.strictEqual(saved.metadata.source_url, 'https://cdn.test/profile.jpg');
       const savedPath = path.join(r.artifacts.assetsDir, saved.file_name);
       assert.strictEqual(fs.readFileSync(savedPath).toString('utf8'), 'visual image bytes');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('save_image skips failed @v downloads without saving an asset', async () => {
+    installFakeProvider([
+      [action('save_image', { ref: '@v1', args: { hint: 'missing image' } })],
+      [action('done', { args: { result: 'ok' } })],
+    ]);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'browser-agent-run-'));
+    try {
+      const visual = setHiddenSourceUrl(
+        { ref: '@v1', role: 'image', url: 'https://cdn.test/missing.jpg', alt: 'Missing' },
+        'https://cdn.test/missing.jpg',
+      );
+      const session = makeFakeSession([makeBrief({
+        elements: [],
+        text: [],
+        regions: [],
+        visualImages: [visual],
+        lookup: { '@v1': 'https://cdn.test/missing.jpg' },
+      })]);
+      session.client.Page = {
+        getFrameTree: async () => ({ frameTree: { frame: { id: 'frame-1' } } }),
+        getResourceContent: async () => { throw new Error('not found'); },
+      };
+      session.client.Network = { enable: async () => {}, loadNetworkResource: async () => ({ resource: { success: false } }) };
+      const r = await run({
+        session,
+        task: 'save missing image',
+        config: { ...baseConfig(), scratchpad: { enabled: true, dir } },
+      });
+      assert.strictEqual(r.status, 'completed', r.error);
+      assert.ok(!fs.existsSync(r.artifacts.savedManifestPath), 'no manifest is written when nothing is saved');
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
