@@ -40,14 +40,13 @@ export interface ComputedStyle {
 /**
  * Stable reference assigned at extract time. Format: `@<type><n>` where
  * `<type>` is `e` (interactive element), `t` (text node), `r` (unreadable
- * region), or `v` (vision-enriched visual). Stable within a single snapshot
- * only — a new extraction reassigns. Regex: `/^@[etrv]\d+$/`.
+ * region). Stable within a single snapshot only — a new extraction reassigns.
+ * Regex: `/^@[etr]\d+$/`.
  */
 export type ElementRef = string;
 export type TextRef = string;
 export type RegionRef = string;
-export type VisualRef = string;
-export type SnapshotRef = ElementRef | TextRef | RegionRef | VisualRef;
+export type SnapshotRef = ElementRef | TextRef | RegionRef;
 
 /** Maps each `ref` to its CDP `backendNodeId` for the current session. */
 export type RefLookup = Record<SnapshotRef, number>;
@@ -108,15 +107,6 @@ export interface RegionNode {
   inViewport: boolean;
 }
 
-export interface VisualNode {
-  ref: VisualRef;
-  role: 'canvas' | 'image' | 'svg' | 'iframe' | string;
-  description: string;
-  sourceRef?: RegionRef;
-  bbox: BBox;
-  inViewport: boolean;
-}
-
 export interface FlatStats {
   totalAXNodes: number;
   interactiveFound: number;
@@ -125,9 +115,6 @@ export interface FlatStats {
   inViewport: number;
   returned: number;
   regionsReturned?: number;
-  regionsAnalyzed?: number;
-  regionsOmitted?: number;
-  visualsReturned?: number;
   elapsedMs: number;
 }
 
@@ -140,7 +127,6 @@ export interface FlatResult {
   elements: FullElement[] | LeanElement[];
   text: TextNode[];
   regions: RegionNode[];
-  visuals?: VisualNode[];
   lookup: RefLookup;
   stats: FlatStats;
 }

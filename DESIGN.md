@@ -58,8 +58,7 @@ The output of `extract.js`. Already implemented (`schemaVersion: "2.0"`). One ad
   "elements": [ { "ref": "@e1", "role": "button", "name": "...", "bbox": [...] }, … ],
   "text":     [ { "ref": "@t1", "role": "heading", "name": "...", "level": 2, … }, … ],
   "regions":  [ { "ref": "@r1", "role": "canvas", "bbox": [...], "inViewport": true }, … ],
-  "visuals":  [ { "ref": "@v1", "role": "image", "description": "...", "sourceRef": "@r1", "bbox": [...], "inViewport": true }, … ],
-  "lookup":   { "@e1": 1276, "@t1": 1419, "@r1": 1502, "@v1": 1502 },
+  "lookup":   { "@e1": 1276, "@t1": 1419, "@r1": 1502 },
   "stats":    { … }
 }
 ```
@@ -86,8 +85,6 @@ The cross-origin iframe case uses the same report-the-fact principle. A cross-or
 
 Each region gets an `@r` ref and a `lookup` entry (like `@e`/`@t`), and renders in the LLMView as an `[@rN]` line in reading order. The ref is accepted by `take_screenshot` for read-only inspection and by `save_image` for report promotion; `click`/`type`/`selectText` reject `@r` at validation. When `take_screenshot` is given any ref (`@e`/`@t`/`@r`, all optional), the executor resolves it to that node's bbox and passes a `clip` to `Page.captureScreenshot` with `captureBeyondViewport:true`, so the capture is cropped to the element's DOM rectangle — exactly, with no model-supplied coordinates, even if the element is scrolled off-screen. With no ref, it captures the full viewport as before (fully backward-compatible). An unresolvable ref degrades to a full-viewport capture rather than failing. Region *presence* (role only, not bbox) is included in `briefHash`, so a page gaining or losing a graphic re-prompts.
 
-Before the planner sees the LLMView, `visualEvidence` can crop up to eight `@r` regions in memory and ask the vision model to classify each as `{ kind: "visual" | "text" | "unknown", description, text }`. Useful visuals become `@v` lines with a compact description and their image bytes cached non-enumerably on the current brief. URL-backed image regions also carry their source URL as hidden executor-only metadata, so it never appears in the scrubbed DOM or prompt but can be used later for asset promotion. Readable text becomes synthetic `@t` text with `derived: "vision"` and `sourceRef`. Unknown, blank, failed, or decorative regions are removed before prompting. This pass never writes files; durable report assets are still created only by explicit save/promotion actions.
-
 The capture encoding (`config.screenshot`) is tiered on this same ref/crop distinction. The vision model downscales internally, so a lossless PNG wastes bytes, image tokens, and disk. A full-viewport *describe* (no ref) tolerates heavy JPEG compression (`quality`, default 55); a cropped *read* (ref present — usually small text, chart labels, or a CAPTCHA) is effectively OCR where artifacts eat thin glyphs, so it uses a higher `croppedQuality` (default 92). The chosen mime/ext rides back on the observation so the saved artifact matches the bytes.
 
 ### LLMView
@@ -102,7 +99,7 @@ What actually goes into the prompt. No `lookup` (executor-only). Deterministic o
   "url": "https://example.com/page",
   "title": "Page title",
   "viewport": { "width": …, "height": …, "scrollY": …, "contentHeight": … },
-  "listing": "[@t1]  heading  \"Sign in\"\n[@t2]  label  \"Email\"\n[@e1]  textbox  \"Email\"\n[@v1]  image  640×320 — \"Product photo\"\n…"
+  "listing": "[@t1]  heading  \"Sign in\"\n[@t2]  label  \"Email\"\n[@e1]  textbox  \"Email\"\n[@r1]  image  640×320 — unreadable; take_screenshot @r1 to read\n…"
 }
 ```
 
@@ -111,7 +108,7 @@ The `listing` is a compact, fixed-width-ish text format optimized for LLM tokeni
 `reduce(brief, view)` builds it (config block `view`, see Configuration):
 
 - **Interleaved by reading order.** Interactive elements (`[@e]`) and text nodes (`[@t]`) are merged into one list sorted top-to-bottom, left-to-right (rows banded by ~10px, then by x), so a label sits next to the field it describes. `@t` lines are primarily read-only grounding, but can be a `click` or `selectText` target (e.g. clickable text inside a container); the validator still rejects them for `type`.
-- **Visual refs (`[@v]`).** Vision-enriched visual regions are shown with a compact description in place. They are distinct from raw unreadable `[@r]` regions, which still render only when enrichment has not classified them.
+- **Unreadable refs (`[@r]`).** DOM-opaque visual regions are shown with their role and size. The planner can inspect one with `take_screenshot @r` or persist it with `save_image @r` when the visual itself belongs in the report.
 - **`view.includeText`** (default true) — interleave text nodes at all.
 - **`view.maxTextChars`** (default 200) — truncate long text-node names.
 - **`view.dedupeText`** (default true) — collapse *consecutive* identical text nodes (reset by any element), so adjacent AX duplication is removed but spatially-separated repeats — e.g. per-row prices — are kept.
@@ -246,7 +243,7 @@ Rules:
 | `get_files` | List downloadable file links (PDFs, docs, archives) | Top-level, `changesPage:false`, `idempotentRead`. Scans `<a href>`/`<embed>`/`<object>`/`<iframe>` whose target looks like a file (extension or `download` attr), using DevTools DOM reads only — no page JS. |
 | `save_text` | Save model-authored text to the run | Top-level, `changesPage:false`. Loop-level (special-cased in `execute.js`, no backend, no extra LLM call). Cleaned `content` is stored in `runs/<id>/saved-manifest.json`; only the model's `summary` re-enters the event log. |
 | `save_file` | Download the bytes at a URL and save them | Top-level, `changesPage:false`. URL typically from `get_files` or a visible link. Download is no-page-JS: `data:` decode → `Page.getResourceContent` (cached, exact, no CSP) → `Network.loadNetworkResource` (cold, CSP-limited). Image → vision summary; else metadata. Bytes → `assets/`; summary re-enters the event log. See `lib/savefile.js`. |
-| `save_image` | Promote a visual into report assets | Top-level, `changesPage:false`. With URL-backed `@v`/`@r` visuals, first tries to persist the original loaded image bytes via the same CDP resource path as `save_file`; if unavailable, falls back to the in-memory crop (`@v`) or a fresh crop/viewport capture (`@e`/`@t`/`@r`/no ref). No extra vision call. Writes to `assets/` and records image metadata in `saved-manifest.json`. |
+| `save_image` | Promote a visual into report assets | Top-level, `changesPage:false`. With URL-backed `@r` regions, first tries to persist the original loaded image bytes via the same CDP resource path as `save_file`; if unavailable, falls back to a fresh crop/viewport capture (`@e`/`@t`/`@r`/no ref). No extra vision call. Writes to `assets/` and records image metadata in `saved-manifest.json`. |
 | `save_record` | Group saved evidence into one completed record | Top-level, `changesPage:false`. Loop-level grouping op. All currently unassigned saved text/files/images move under one manifest `records[]` entry with compact model-provided metadata. No record id is stored in the MVP; unassigned saves remain useful evidence for the report. |
 | `wait` | Sleep for `ms` milliseconds | For *deliberate* pauses only; `ms` is capped at 30000. Universal settle still runs after every verb — `wait` is not the settle mechanism. |
 | `done` | Signal task completion | Loop captures the optional `result` string and exits with status `completed`. |
@@ -378,14 +375,12 @@ DEFAULTS (lib/config.js)  <  browser-agent.config.json  <  env vars  <  CLI flag
 | `loop.maxSameDirectionScrolls` | `3` | Add a pivot warning after this many consecutive same-direction scrolls on one page. |
 | `settle.afterActionMs` | `150` | Pause after an action before the next snapshot. |
 | `settle.maxMs` | `2000` | Hard cap on settle. |
-| `visualEvidence.enabled` | `true` | Run the pre-brief crop+vision pass over unreadable `@r` regions. |
-| `visualEvidence.maxRegions` | `8` | Maximum unreadable regions classified per extracted brief. Overflow remains as raw `@r` fallback. |
 | `executor.backend` | `os` | `os` or `cdp` (also `BROWSER_AGENT_EXECUTOR`). |
 | `executor.pauseOnUserInput` | `true` | OS backend: pause input while the human uses the mouse/keyboard, auto-resume when idle. |
 | `executor.userIdleMs` | `600` | OS backend: how long the human must be idle before input resumes. |
 | `executor.raiseChromeOnStart` | `true` | OS backend: preflight foregrounds the agent's Chrome (PID-targeted) so the frontmost-gate is satisfied without manual clicking. |
 | `executor.humanize.*` | — | OS-backend motion/timing knobs (see Executor backends). |
-| `vision.provider` | `openai` | Vision model provider for the image-summary path (`visualEvidence`, `take_screenshot`, and `save_file` on images) — `openai`/`anthropic`/`gemini`/`ollama`. Independent of the planner `provider`. |
+| `vision.provider` | `openai` | Vision model provider for the image-summary path (`take_screenshot` and `save_file` on images) — `openai`/`anthropic`/`gemini`/`ollama`. Independent of the planner `provider`. |
 | `vision.model` | `null` | `null` → a multimodal default for the chosen provider. |
 | `vision.prompt` | `"Describe what you see…"` | Static base prompt sent with the image; a per-call `hint` is appended. |
 | `vision.maxTokens` | `1024` | Output cap for the vision call. |
@@ -456,16 +451,15 @@ It is *not* a script: the live page is always ground truth, and mid-run re-routi
 
 ```
 1. snapshot  = extract(session)            // polls while unchanged (no-change short-circuit)
-2. snapshot  = visualEvidence(snapshot)    // in-memory @r → @v/@t/omit enrichment
-3. llmView   = reduce(snapshot)
-4. completion = plan({ system, tools, messages: [ turnMessage(task, events, llmView) ], provider, model })
-5. actions   = validate(completion.actions, snapshot.lookup, registry)
-6. for each action:
+2. llmView   = reduce(snapshot)
+3. completion = plan({ system, tools, messages: [ turnMessage(task, events, llmView) ], provider, model })
+4. actions   = validate(completion.actions, snapshot.lookup, registry)
+5. for each action:
      observation = execute(action, session)   // settles internally
      steps.push({ action, observation })
      events.push(describe(action, observation))   // compact memory; see § Memory below
      if action.verb === "done" → exit "completed"
-7. goto 1
+6. goto 1
 ```
 
 ### Memory: event log, not transcript

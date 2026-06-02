@@ -252,38 +252,12 @@ async function reduceSuite() {
     assert.ok(!/\(\d+,\d+\)/.test(region), 'region line omits coordinates');
   });
 
-  await test('renders vision-enriched visuals in reading order with descriptions', () => {
-    const brief = makeBrief({
-      elements: [],
-      text: [{ ref: '@t1', role: 'heading', name: 'Gallery', bbox: [0, 10, 100, 20] }],
-      visuals: [
-        { ref: '@v1', role: 'image', description: 'Photo of a black cat sitting on a blue chair', bbox: [0, 100, 640, 480], inViewport: true },
-        { ref: '@v2', role: 'image', description: '   ', bbox: [0, 200, 640, 480], inViewport: true },
-      ],
-    });
-    const lines = reduce(brief, { includeText: true }).listing.split('\n');
-    assert.ok(lines[0].includes('@t1'), 'heading sorts above visual');
-    const visual = lines.find(l => l.includes('[@v1]'));
-    assert.ok(visual, 'visual line present with its @v ref');
-    assert.ok(visual.includes('image') && visual.includes('640×480'), 'role and dimensions shown');
-    assert.ok(visual.includes('"Photo of a black cat sitting on a blue chair"'), 'description shown');
-    assert.ok(!lines.some(l => l.includes('[@v2]')), 'empty visual descriptions are omitted');
-  });
-
   await test('computeBriefHash: regions bust the hash, position does not', () => {
     const without = makeBrief({ regions: [] });
     const withCanvas = makeBrief({ regions: [{ role: 'canvas', bbox: [0, 0, 10, 10], inViewport: true }] });
     assert.notStrictEqual(computeBriefHash(without), computeBriefHash(withCanvas), 'gaining a region re-prompts');
     const moved = makeBrief({ regions: [{ role: 'canvas', bbox: [500, 500, 10, 10], inViewport: true }] });
     assert.strictEqual(computeBriefHash(withCanvas), computeBriefHash(moved), 'region bbox excluded from hash');
-  });
-
-  await test('computeBriefHash: visual descriptions bust the hash, position does not', () => {
-    const withVisual = makeBrief({ visuals: [{ ref: '@v1', role: 'image', description: 'Cat photo', bbox: [0, 0, 10, 10], inViewport: true }] });
-    const moved = makeBrief({ visuals: [{ ref: '@v1', role: 'image', description: 'Cat photo', bbox: [500, 500, 10, 10], inViewport: true }] });
-    assert.strictEqual(computeBriefHash(withVisual), computeBriefHash(moved), 'visual bbox excluded from hash');
-    const changed = makeBrief({ visuals: [{ ref: '@v1', role: 'image', description: 'Dog photo', bbox: [0, 0, 10, 10], inViewport: true }] });
-    assert.notStrictEqual(computeBriefHash(withVisual), computeBriefHash(changed), 'description change busts hash');
   });
 
   await test('collapses internal whitespace so a multi-line name stays on one line', () => {
@@ -561,7 +535,7 @@ async function screenshotSuite() {
 
 async function visionSuite() {
   console.log('\nvision:');
-  const { normalizeVisionResult, normalizeVisualEvidenceResult } = require('../lib/vision');
+  const { normalizeVisionResult } = require('../lib/vision');
 
   await test('normalizes typed JSON into summary + description', () => {
     const out = normalizeVisionResult('{"summary":"short page summary","description":"full page description"}');
@@ -574,115 +548,6 @@ async function visionSuite() {
     assert.strictEqual(out.description, 'one two three four five six seven eight nine ten eleven twelve');
   });
 
-  await test('normalizes visual evidence classification JSON', () => {
-    assert.deepStrictEqual(
-      normalizeVisualEvidenceResult('{"kind":"visual","description":"A useful chart","text":""}'),
-      { kind: 'visual', description: 'A useful chart', text: '' },
-    );
-    assert.deepStrictEqual(
-      normalizeVisualEvidenceResult({ kind: 'text', description: '', text: 'Total revenue: $10M' }),
-      { kind: 'text', description: '', text: 'Total revenue: $10M' },
-    );
-    assert.deepStrictEqual(
-      normalizeVisualEvidenceResult('{"kind":"unknown","description":"white box","text":""}'),
-      { kind: 'unknown', description: 'white box', text: '' },
-    );
-    assert.deepStrictEqual(
-      normalizeVisualEvidenceResult('not json'),
-      { kind: 'unknown', description: '', text: '' },
-    );
-  });
-}
-
-async function visualEnrichmentSuite() {
-  console.log('\nvisual enrichment:');
-  const visionMod = require('../lib/vision');
-  const {
-    enrichVisualEvidence,
-    getCachedVisualImage,
-    clearVisualEvidenceCache,
-  } = require('../lib/visual_enrichment');
-
-  function sessionReturning(base64 = Buffer.from('crop').toString('base64')) {
-    const calls = [];
-    return {
-      calls,
-      client: {
-        Page: {
-          captureScreenshot: async (params) => {
-            calls.push(params);
-            return { data: base64 };
-          },
-        },
-      },
-    };
-  }
-
-  await test('turns classified regions into @v, derived @t, or omission', async () => {
-    clearVisualEvidenceCache();
-    const origClassify = visionMod.classifyVisualEvidence;
-    const base64 = Buffer.from('visual crop').toString('base64');
-    const outputs = [
-      { kind: 'visual', description: 'Photo of a black cat', text: '' },
-      { kind: 'text', description: '', text: 'Revenue grew 25%' },
-      { kind: 'unknown', description: 'blank white box', text: '' },
-    ];
-    visionMod.classifyVisualEvidence = async () => outputs.shift();
-    try {
-      const brief = makeBrief({
-        elements: [],
-        text: [{ ref: '@t1', role: 'heading', name: 'Report', bbox: [0, 0, 100, 20] }],
-        regions: [
-          { ref: '@r1', role: 'image', bbox: { x: 0, y: 40, width: 100, height: 100 }, inViewport: true },
-          { ref: '@r2', role: 'canvas', bbox: { x: 0, y: 160, width: 90, height: 100 }, inViewport: true },
-          { ref: '@r3', role: 'svg', bbox: { x: 0, y: 280, width: 80, height: 100 }, inViewport: true },
-        ],
-        lookup: { '@t1': 1, '@r1': 11, '@r2': 22, '@r3': 33 },
-      });
-      const session = sessionReturning(base64);
-      await enrichVisualEvidence({ session, brief, rawHash: 'raw', config: { enabled: true, maxRegions: 8 } });
-
-      assert.deepStrictEqual(brief.regions, [], 'all classified @r nodes are removed from the raw region list');
-      assert.strictEqual(brief.visuals.length, 1);
-      assert.strictEqual(brief.visuals[0].ref, '@v1');
-      assert.strictEqual(brief.visuals[0].description, 'Photo of a black cat');
-      assert.strictEqual(brief.visuals[0].sourceRef, '@r1');
-      assert.strictEqual(brief.text[1].ref, '@t2');
-      assert.strictEqual(brief.text[1].name, 'Revenue grew 25%');
-      assert.strictEqual(brief.text[1].derived, 'vision');
-      assert.deepStrictEqual(brief.lookup, { '@t1': 1, '@v1': 11, '@t2': 22 });
-      assert.strictEqual(session.calls.length, 3, 'one cropped capture per analyzed region');
-
-      const cached = getCachedVisualImage(brief, '@v1');
-      assert.strictEqual(cached.image, base64);
-      assert.ok(!Object.keys(brief).some(k => k.includes('VisualCache')), 'image cache is non-enumerable');
-      assert.ok(!JSON.stringify(brief).includes(base64), 'image bytes do not serialize with the brief');
-    } finally {
-      visionMod.classifyVisualEvidence = origClassify;
-      clearVisualEvidenceCache();
-    }
-  });
-
-  await test('keeps @r fallback when capture or vision fails', async () => {
-    clearVisualEvidenceCache();
-    const origClassify = visionMod.classifyVisualEvidence;
-    visionMod.classifyVisualEvidence = async () => { throw new Error('vision timeout'); };
-    try {
-      const brief = makeBrief({
-        elements: [],
-        text: [],
-        regions: [{ ref: '@r1', role: 'canvas', bbox: { x: 0, y: 0, width: 100, height: 100 }, inViewport: true }],
-        lookup: { '@r1': 11 },
-      });
-      await enrichVisualEvidence({ session: sessionReturning(), brief, rawHash: 'raw', config: { enabled: true, maxRegions: 8 } });
-      assert.strictEqual(brief.regions.length, 1);
-      assert.strictEqual(brief.regions[0].ref, '@r1');
-      assert.strictEqual(brief.lookup['@r1'], 11);
-    } finally {
-      visionMod.classifyVisualEvidence = origClassify;
-      clearVisualEvidenceCache();
-    }
-  });
 }
 
 async function osGateSuite() {
@@ -841,16 +706,16 @@ async function validateSuite() {
     assert.strictEqual(ok.length, 1, 'no ref is valid — full-viewport capture');
   });
 
-  await test('save_image accepts optional @e/@t/@r/@v refs', () => {
-    const lookup = { '@e1': 111, '@t1': 222, '@r1': 333, '@v1': 444 };
-    for (const ref of ['@e1', '@t1', '@r1', '@v1']) {
+  await test('save_image accepts optional @e/@t/@r refs', () => {
+    const lookup = { '@e1': 111, '@t1': 222, '@r1': 333 };
+    for (const ref of ['@e1', '@t1', '@r1']) {
       const { ok, errors } = validate([action('save_image', { ref })], lookup, registry);
       assert.strictEqual(ok.length, 1, `${ref} accepted: ${JSON.stringify(errors)}`);
     }
     assert.strictEqual(validate([action('save_image')], lookup, registry).ok.length, 1, 'no ref saves viewport');
-    const rejected = validate([action('save_image', { ref: '@v9' })], lookup, registry);
+    const rejected = validate([action('save_image', { ref: '@v1' })], { '@v1': 444 }, registry);
     assert.strictEqual(rejected.ok.length, 0);
-    assert.match(rejected.errors[0].error, /not present in current snapshot/);
+    assert.match(rejected.errors[0].error, /requires ref type/);
   });
 
   await test('take_screenshot: a present-but-unknown ref is rejected', () => {
@@ -1603,7 +1468,7 @@ async function promptSuite() {
     assert.ok(prompt.includes('type[@e] (intent: string, text: string, clear: boolean?, submit: boolean?)'), 'required + optional args should be shown');
     assert.ok(prompt.includes('wait (intent: string, ms: number)'), 'wait args should be shown');
     assert.ok(prompt.includes('take_screenshot[@e|@t|@r] (ref: string?, intent: string, hint: string?)'), 'optional ref types should be shown');
-    assert.ok(prompt.includes('save_image[@e|@t|@r|@v] (ref: string?, intent: string, hint: string?)'), 'visual image promotion should be shown');
+    assert.ok(prompt.includes('save_image[@e|@t|@r] (ref: string?, intent: string, hint: string?)'), 'visual image promotion should be shown');
     assert.ok(prompt.includes('save_record (intent: string, metadata: string?)'), 'record grouping action should be shown');
     assert.ok(prompt.includes('done (intent: string, result: string?)'), 'optional args should be marked');
     assert.ok(prompt.includes('describing where this'), 'intent rule should be explicit');
@@ -2157,15 +2022,10 @@ async function loopSuite() {
     }
   });
 
-  await test('save_image promotes cached visual evidence into the manifest', async () => {
-    const visionMod = require('../lib/vision');
-    const { clearVisualEvidenceCache } = require('../lib/visual_enrichment');
-    const origClassify = visionMod.classifyVisualEvidence;
+  await test('save_image promotes an unreadable region crop into the manifest', async () => {
     const base64 = Buffer.from('cat image bytes').toString('base64');
-    clearVisualEvidenceCache();
-    visionMod.classifyVisualEvidence = async () => ({ kind: 'visual', description: 'Photo of a black cat', text: '' });
     installFakeProvider([
-      [action('save_image', { ref: '@v1', args: { hint: 'cat photo' } })],
+      [action('save_image', { ref: '@r1', args: { hint: 'cat photo' } })],
       [action('done', { args: { result: 'ok' } })],
     ]);
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'browser-agent-run-'));
@@ -2188,27 +2048,20 @@ async function loopSuite() {
       assert.strictEqual(manifest.unassigned.length, 1);
       assert.strictEqual(manifest.unassigned[0].kind, 'image');
       assert.strictEqual(manifest.unassigned[0].save_reason, 'test intent');
-      assert.strictEqual(manifest.unassigned[0].metadata.description, 'Photo of a black cat');
-      assert.strictEqual(manifest.unassigned[0].metadata.ref, '@v1');
+      assert.strictEqual(manifest.unassigned[0].metadata.description, 'cat photo');
+      assert.strictEqual(manifest.unassigned[0].metadata.ref, '@r1');
       const savedPath = path.join(r.artifacts.assetsDir, manifest.unassigned[0].file_name);
       assert.strictEqual(fs.readFileSync(savedPath).toString('utf8'), 'cat image bytes');
     } finally {
-      visionMod.classifyVisualEvidence = origClassify;
-      clearVisualEvidenceCache();
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  await test('save_image prefers original bytes for URL-backed visual evidence', async () => {
-    const visionMod = require('../lib/vision');
-    const { clearVisualEvidenceCache } = require('../lib/visual_enrichment');
-    const origClassify = visionMod.classifyVisualEvidence;
+  await test('save_image prefers original bytes for URL-backed unreadable regions', async () => {
     const cropBase64 = Buffer.from('cropped cat bytes').toString('base64');
     const originalBase64 = Buffer.from('original cat bytes').toString('base64');
-    clearVisualEvidenceCache();
-    visionMod.classifyVisualEvidence = async () => ({ kind: 'visual', description: 'Profile photo of a black cat', text: '' });
     installFakeProvider([
-      [action('save_image', { ref: '@v1', args: { hint: 'cat profile' } })],
+      [action('save_image', { ref: '@r1', args: { hint: 'cat profile' } })],
       [action('done', { args: { result: 'ok' } })],
     ]);
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'browser-agent-run-'));
@@ -2241,13 +2094,11 @@ async function loopSuite() {
       const manifest = JSON.parse(fs.readFileSync(r.artifacts.savedManifestPath, 'utf8'));
       const saved = manifest.unassigned[0];
       assert.strictEqual(saved.kind, 'image');
-      assert.strictEqual(saved.metadata.description, 'Profile photo of a black cat');
+      assert.strictEqual(saved.metadata.description, 'cat profile');
       assert.strictEqual(saved.metadata.source_url, 'https://cdn.test/profile.jpg');
       const savedPath = path.join(r.artifacts.assetsDir, saved.file_name);
       assert.strictEqual(fs.readFileSync(savedPath).toString('utf8'), 'original cat bytes');
     } finally {
-      visionMod.classifyVisualEvidence = origClassify;
-      clearVisualEvidenceCache();
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
@@ -3331,7 +3182,6 @@ async function postJSONSuite() {
   await reduceSuite();
   await regionSuite();
   await visionSuite();
-  await visualEnrichmentSuite();
   await screenshotSuite();
   await osGateSuite();
   await validateSuite();
