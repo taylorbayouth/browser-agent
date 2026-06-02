@@ -58,7 +58,8 @@ The output of `extract.js`. Already implemented (`schemaVersion: "2.0"`). One ad
   "elements": [ { "ref": "@e1", "role": "button", "name": "...", "bbox": [...] }, … ],
   "text":     [ { "ref": "@t1", "role": "heading", "name": "...", "level": 2, … }, … ],
   "regions":  [ { "ref": "@r1", "role": "canvas", "bbox": [...], "inViewport": true }, … ],
-  "lookup":   { "@e1": 1276, "@t1": 1419, "@r1": 1502 },
+  "visuals":  [ { "ref": "@v1", "role": "image", "description": "...", "sourceRef": "@r1", "bbox": [...], "inViewport": true }, … ],
+  "lookup":   { "@e1": 1276, "@t1": 1419, "@r1": 1502, "@v1": 1502 },
   "stats":    { … }
 }
 ```
@@ -99,7 +100,7 @@ What actually goes into the prompt. No `lookup` (executor-only). Deterministic o
   "url": "https://example.com/page",
   "title": "Page title",
   "viewport": { "width": …, "height": …, "scrollY": …, "contentHeight": … },
-  "listing": "[@t1]  heading  \"Sign in\"\n[@t2]  label  \"Email\"\n[@e1]  textbox  \"Email\"\n…"
+  "listing": "[@t1]  heading  \"Sign in\"\n[@t2]  label  \"Email\"\n[@e1]  textbox  \"Email\"\n[@v1]  image  640×320 — \"Product photo\"\n…"
 }
 ```
 
@@ -108,6 +109,7 @@ The `listing` is a compact, fixed-width-ish text format optimized for LLM tokeni
 `reduce(brief, view)` builds it (config block `view`, see Configuration):
 
 - **Interleaved by reading order.** Interactive elements (`[@e]`) and text nodes (`[@t]`) are merged into one list sorted top-to-bottom, left-to-right (rows banded by ~10px, then by x), so a label sits next to the field it describes. `@t` lines are primarily read-only grounding, but can be a `click` or `selectText` target (e.g. clickable text inside a container); the validator still rejects them for `type`.
+- **Visual refs (`[@v]`).** Vision-enriched visual regions are shown with a compact description in place. They are distinct from raw unreadable `[@r]` regions, which still render only when enrichment has not classified them.
 - **`view.includeText`** (default true) — interleave text nodes at all.
 - **`view.maxTextChars`** (default 200) — truncate long text-node names.
 - **`view.dedupeText`** (default true) — collapse *consecutive* identical text nodes (reset by any element), so adjacent AX duplication is removed but spatially-separated repeats — e.g. per-row prices — are kept.

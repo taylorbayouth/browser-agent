@@ -252,12 +252,38 @@ async function reduceSuite() {
     assert.ok(!/\(\d+,\d+\)/.test(region), 'region line omits coordinates');
   });
 
+  await test('renders vision-enriched visuals in reading order with descriptions', () => {
+    const brief = makeBrief({
+      elements: [],
+      text: [{ ref: '@t1', role: 'heading', name: 'Gallery', bbox: [0, 10, 100, 20] }],
+      visuals: [
+        { ref: '@v1', role: 'image', description: 'Photo of a black cat sitting on a blue chair', bbox: [0, 100, 640, 480], inViewport: true },
+        { ref: '@v2', role: 'image', description: '   ', bbox: [0, 200, 640, 480], inViewport: true },
+      ],
+    });
+    const lines = reduce(brief, { includeText: true }).listing.split('\n');
+    assert.ok(lines[0].includes('@t1'), 'heading sorts above visual');
+    const visual = lines.find(l => l.includes('[@v1]'));
+    assert.ok(visual, 'visual line present with its @v ref');
+    assert.ok(visual.includes('image') && visual.includes('640×480'), 'role and dimensions shown');
+    assert.ok(visual.includes('"Photo of a black cat sitting on a blue chair"'), 'description shown');
+    assert.ok(!lines.some(l => l.includes('[@v2]')), 'empty visual descriptions are omitted');
+  });
+
   await test('computeBriefHash: regions bust the hash, position does not', () => {
     const without = makeBrief({ regions: [] });
     const withCanvas = makeBrief({ regions: [{ role: 'canvas', bbox: [0, 0, 10, 10], inViewport: true }] });
     assert.notStrictEqual(computeBriefHash(without), computeBriefHash(withCanvas), 'gaining a region re-prompts');
     const moved = makeBrief({ regions: [{ role: 'canvas', bbox: [500, 500, 10, 10], inViewport: true }] });
     assert.strictEqual(computeBriefHash(withCanvas), computeBriefHash(moved), 'region bbox excluded from hash');
+  });
+
+  await test('computeBriefHash: visual descriptions bust the hash, position does not', () => {
+    const withVisual = makeBrief({ visuals: [{ ref: '@v1', role: 'image', description: 'Cat photo', bbox: [0, 0, 10, 10], inViewport: true }] });
+    const moved = makeBrief({ visuals: [{ ref: '@v1', role: 'image', description: 'Cat photo', bbox: [500, 500, 10, 10], inViewport: true }] });
+    assert.strictEqual(computeBriefHash(withVisual), computeBriefHash(moved), 'visual bbox excluded from hash');
+    const changed = makeBrief({ visuals: [{ ref: '@v1', role: 'image', description: 'Dog photo', bbox: [0, 0, 10, 10], inViewport: true }] });
+    assert.notStrictEqual(computeBriefHash(withVisual), computeBriefHash(changed), 'description change busts hash');
   });
 
   await test('collapses internal whitespace so a multi-line name stays on one line', () => {

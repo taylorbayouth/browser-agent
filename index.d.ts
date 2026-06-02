@@ -37,14 +37,15 @@ export interface ComputedStyle {
 
 /**
  * Stable reference assigned at extract time. Format: `@<type><n>` where
- * `<type>` is `e` (interactive element), `t` (text node), or `r` (unreadable
- * region). Stable within a single snapshot only — a new extraction reassigns.
- * Regex: `/^@[etr]\d+$/`.
+ * `<type>` is `e` (interactive element), `t` (text node), `r` (unreadable
+ * region), or `v` (vision-enriched visual). Stable within a single snapshot
+ * only — a new extraction reassigns. Regex: `/^@[etrv]\d+$/`.
  */
 export type ElementRef = string;
 export type TextRef = string;
 export type RegionRef = string;
-export type SnapshotRef = ElementRef | TextRef | RegionRef;
+export type VisualRef = string;
+export type SnapshotRef = ElementRef | TextRef | RegionRef | VisualRef;
 
 /** Maps each `ref` to its CDP `backendNodeId` for the current session. */
 export type RefLookup = Record<SnapshotRef, number>;
@@ -105,6 +106,15 @@ export interface RegionNode {
   inViewport: boolean;
 }
 
+export interface VisualNode {
+  ref: VisualRef;
+  role: 'canvas' | 'image' | 'svg' | 'iframe' | string;
+  description: string;
+  sourceRef?: RegionRef;
+  bbox: BBox;
+  inViewport: boolean;
+}
+
 export interface FlatStats {
   totalAXNodes: number;
   interactiveFound: number;
@@ -125,6 +135,7 @@ export interface FlatResult {
   elements: FullElement[] | LeanElement[];
   text: TextNode[];
   regions: RegionNode[];
+  visuals?: VisualNode[];
   lookup: RefLookup;
   stats: FlatStats;
 }
