@@ -1090,36 +1090,38 @@ async function scratchpadSuite() {
       assert.strictEqual(scratch.saveText({ content: 'Nope' }), null);
       assert.strictEqual(scratch.saveImage({ base64: Buffer.from('x').toString('base64') }), null);
       assert.strictEqual(scratch.writeReport('report'), null);
-      assert.strictEqual(scratch.readMarkdown(), '');
-      assert.strictEqual(scratch.readIndex(), '');
+      assert.strictEqual(scratch.readManifest(), '');
       assert.deepStrictEqual(fs.readdirSync(dir), []);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  await test('saveText appends markdown and saveImage persists assets', () => {
+  await test('saveText writes manifest entries and saveImage persists assets', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'browser-agent-scratch-'));
     try {
       const scratch = createScratchpad({ dir, runId: 'run-1' });
       const text = scratch.saveText({ content: 'Full captured text', summary: 'Captured note', url: 'https://example.test/a' });
       const image = scratch.saveImage({ base64: Buffer.from('png bytes').toString('base64'), title: 'Shot' });
-      const md = scratch.readMarkdown();
-      const index = scratch.readIndex();
+      const manifest = JSON.parse(scratch.readManifest());
 
-      assert.strictEqual(text.path, scratch.savedPath);
+      assert.strictEqual(text.path, scratch.manifestPath);
       assert.strictEqual(fs.readFileSync(image.path, 'utf8'), 'png bytes');
-      assert.ok(md.includes('### Captured note'));
-      assert.ok(md.includes('- Image: assets/screenshot-1.png'));
-      assert.ok(md.includes('![screenshot-1.png](assets/screenshot-1.png)'));
-      assert.ok(!md.includes('- Record:'), 'raw saved.md omits record ids');
-      assert.ok(!md.includes('- Saved:'), 'raw saved.md omits timestamps');
-      assert.ok(index.includes('### Captured note'));
-      assert.ok(index.includes('- Type: text'));
-      assert.ok(index.includes('- URL: https://example.test/a'));
-      assert.ok(index.includes('### Shot'));
-      assert.ok(index.includes('- Image: [assets/screenshot-1.png](assets/screenshot-1.png)'));
-      assert.ok(!index.includes('- Saved:'), 'saved-index.md omits timestamps');
+      assert.strictEqual(manifest.version, 1);
+      assert.strictEqual(manifest.asset_dir, 'assets');
+      assert.deepStrictEqual(manifest.records, []);
+      assert.strictEqual(manifest.unassigned.length, 2);
+      assert.deepStrictEqual(manifest.unassigned[0], {
+        kind: 'text',
+        content: 'Full captured text',
+        metadata: {
+          url: 'https://example.test/a',
+          summary: 'Captured note',
+        },
+      });
+      assert.strictEqual(manifest.unassigned[1].kind, 'image');
+      assert.strictEqual(manifest.unassigned[1].file_name, 'screenshot-1.png');
+      assert.strictEqual(manifest.unassigned[1].metadata.title, 'Shot');
       assert.strictEqual(scratch.saveCount, 2);
       assert.strictEqual(scratch.textCount, 1);
       assert.strictEqual(scratch.imageCount, 1);
@@ -1135,21 +1137,59 @@ async function scratchpadSuite() {
       scratch.saveText({ content: 'Fact', summary: 'Fact saved', reason: 'preserve fact before navigating' });
       scratch.saveImage({ base64: Buffer.from('png').toString('base64'), reason: 'read chart labels' });
       scratch.saveAsset({ filename: 'report.pdf', base64: Buffer.from('pdf').toString('base64'), reason: 'keep source document' });
-      const md = scratch.readMarkdown();
-      const index = scratch.readIndex();
+      const manifest = JSON.parse(scratch.readManifest());
 
-      assert.ok(md.includes('- Reason: preserve fact before navigating'));
-      assert.ok(md.includes('- Reason: read chart labels'));
-      assert.ok(md.includes('- Reason: keep source document'));
-      assert.ok(index.includes('- Reason: preserve fact before navigating'));
-      assert.ok(index.includes('- Reason: read chart labels'));
-      assert.ok(index.includes('- Reason: keep source document'));
+      assert.deepStrictEqual(manifest.unassigned.map(s => s.save_reason), [
+        'preserve fact before navigating',
+        'read chart labels',
+        'keep source document',
+      ]);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  await test('saveText cleans webpage text before appending to saved.md', () => {
+  await test('saveRecord groups current unassigned saves and leaves later saves unassigned', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'browser-agent-scratch-'));
+    try {
+      const scratch = createScratchpad({ dir, runId: 'run-1' });
+      scratch.saveImage({
+        base64: Buffer.from('png').toString('base64'),
+        description: 'A product screenshot',
+        metadata: { ref: '@r1', role: 'image' },
+      });
+      scratch.saveAsset({
+        filename: 'report.pdf',
+        base64: Buffer.from('pdf').toString('base64'),
+        summary: 'Source report',
+        url: 'https://example.test/report.pdf',
+      });
+      scratch.saveRecord({
+        metadata: '{"company":"Acme","role":"Head of Product"}',
+        url: 'https://example.test/jobs/1',
+        reason: 'complete Acme role',
+      });
+      scratch.saveText({ content: 'Global note', summary: 'Global note saved' });
+      const manifest = JSON.parse(scratch.readManifest());
+
+      assert.strictEqual(manifest.records.length, 1);
+      assert.deepStrictEqual(manifest.records[0].metadata, {
+        company: 'Acme',
+        role: 'Head of Product',
+        url: 'https://example.test/jobs/1',
+        save_reason: 'complete Acme role',
+      });
+      assert.deepStrictEqual(manifest.records[0].saves.map(s => s.kind), ['image', 'file']);
+      assert.strictEqual(manifest.records[0].saves[0].metadata.ref, '@r1');
+      assert.strictEqual(manifest.records[0].saves[1].metadata.source_url, 'https://example.test/report.pdf');
+      assert.deepStrictEqual(manifest.unassigned.map(s => s.kind), ['text']);
+      assert.strictEqual(manifest.unassigned[0].content, 'Global note');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('saveText cleans webpage text before storing manifest content', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'browser-agent-scratch-'));
     try {
       const scratch = createScratchpad({ dir, runId: 'run-1' });
@@ -1158,28 +1198,11 @@ async function scratchpadSuite() {
         summary: 'Captured page text',
       });
 
-      const md = scratch.readMarkdown();
-      assert.ok(md.includes('### Captured page text'));
-      assert.ok(md.includes('Title & More\nRead this link.'));
-      assert.ok(!md.includes('<h1>'));
-      assert.ok(!md.includes('https://example.test'));
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  await test('saved-index.md keeps summaries to 30 words', () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'browser-agent-scratch-'));
-    try {
-      const scratch = createScratchpad({ dir, runId: 'run-1' });
-      const summary = Array.from({ length: 35 }, (_, i) => `word${i + 1}`).join(' ');
-      scratch.saveText({ content: 'Full raw text', summary });
-
-      const line = scratch.readIndex().split('\n').find(l => l.startsWith('- Summary: '));
-      const words = line.replace('- Summary: ', '').split(/\s+/).filter(Boolean);
-      assert.strictEqual(words.length, 30);
-      assert.strictEqual(words[0], 'word1');
-      assert.strictEqual(words[29], 'word30');
+      const item = JSON.parse(scratch.readManifest()).unassigned[0];
+      assert.strictEqual(item.content, 'Title & More\nRead this link.');
+      assert.strictEqual(item.metadata.summary, 'Captured page text');
+      assert.ok(!item.content.includes('<h1>'));
+      assert.ok(!item.content.includes('https://example.test'));
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -1230,9 +1253,10 @@ async function scratchpadSuite() {
         ext: 'jpg',
       });
 
-      assert.ok(scratch.readMarkdown().includes('### Read chart labels screenshot'));
       assert.strictEqual(image.name, 'read-chart-labels-screenshot-7.jpg');
-      assert.ok(scratch.readMarkdown().includes('- Image: assets/read-chart-labels-screenshot-7.jpg'));
+      const item = JSON.parse(scratch.readManifest()).unassigned[0];
+      assert.strictEqual(item.file_name, 'read-chart-labels-screenshot-7.jpg');
+      assert.strictEqual(item.metadata.title, 'Read chart labels screenshot');
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -1286,8 +1310,9 @@ async function scratchpadSuite() {
       });
 
       assert.strictEqual(file.name, 'quarterly-revenue-report-file-12.pdf');
-      assert.ok(scratch.readMarkdown().includes('- File: assets/quarterly-revenue-report-file-12.pdf'));
-      assert.ok(scratch.readMarkdown().includes('- Link: [quarterly-revenue-report-file-12.pdf](assets/quarterly-revenue-report-file-12.pdf)'));
+      const item = JSON.parse(scratch.readManifest()).unassigned[0];
+      assert.strictEqual(item.kind, 'file');
+      assert.strictEqual(item.file_name, 'quarterly-revenue-report-file-12.pdf');
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -1331,13 +1356,12 @@ async function agentCliSuite() {
       status: 'completed',
       result: 'ok',
       report: '# Report',
-      reportEvidence: { source: 'saved-index.md', rawTokens: 4500, rawTokenBudget: 3000 },
+      reportEvidence: { source: 'saved-manifest.json', rawTokens: 4500 },
       artifacts: {
         runDir: '/tmp/runs/run-1',
         reportPath: '/tmp/runs/run-1/report.md',
         reportHtmlPath: '/tmp/runs/run-1/report.html',
-        savedPath: '/tmp/runs/run-1/saved.md',
-        savedIndexPath: '/tmp/runs/run-1/saved-index.md',
+        savedManifestPath: '/tmp/runs/run-1/saved-manifest.json',
         assetsDir: '/tmp/runs/run-1/assets',
         logPath: '/tmp/logs/latest.json',
         jsonlPath: '/tmp/logs/latest.jsonl',
@@ -1359,9 +1383,8 @@ async function agentCliSuite() {
     assert.strictEqual(out.report.markdown, '# Report');
     assert.strictEqual(out.report.path, '/tmp/runs/run-1/report.md');
     assert.strictEqual(out.report.htmlPath, '/tmp/runs/run-1/report.html');
-    assert.strictEqual(out.report.evidenceSource, 'saved-index.md');
-    assert.strictEqual(out.artifacts.saved, '/tmp/runs/run-1/saved.md');
-    assert.strictEqual(out.artifacts.savedIndex, '/tmp/runs/run-1/saved-index.md');
+    assert.strictEqual(out.report.evidenceSource, 'saved-manifest.json');
+    assert.strictEqual(out.artifacts.savedManifest, '/tmp/runs/run-1/saved-manifest.json');
     assert.strictEqual(out.artifacts.assetsDir, '/tmp/runs/run-1/assets');
     assert.strictEqual(out.artifacts.log, '/tmp/logs/latest.json');
     assert.strictEqual(out.artifacts.jsonl, '/tmp/logs/latest.jsonl');
@@ -1386,17 +1409,20 @@ async function promptSuite() {
       wait: registry.wait,
       take_screenshot: registry.take_screenshot,
       save_text: registry.save_text,
+      save_record: registry.save_record,
       done: registry.done,
     });
     assert.ok(prompt.includes('click[@e|@t]'), 'click ref types should be shown');
     assert.ok(prompt.includes('type[@e] (intent: string, text: string, clear: boolean?, submit: boolean?)'), 'required + optional args should be shown');
     assert.ok(prompt.includes('wait (intent: string, ms: number)'), 'wait args should be shown');
     assert.ok(prompt.includes('take_screenshot[@e|@t|@r] (ref: string?, intent: string, hint: string?)'), 'optional ref types should be shown');
+    assert.ok(prompt.includes('save_record (intent: string, metadata: string?)'), 'record grouping action should be shown');
     assert.ok(prompt.includes('done (intent: string, result: string?)'), 'optional args should be marked');
     assert.ok(prompt.includes('describing where this'), 'intent rule should be explicit');
     assert.ok(prompt.includes('never pass punctuation, CSS selectors, words, or coordinates as ref'), 'screenshot refs should be hardened');
     assert.ok(prompt.includes('Do not save intermediate report drafts'), 'operating rules should discourage draft-saving');
     assert.ok(prompt.includes('Do not use save_text for intermediate answer drafts'), 'save_text should discourage drafts');
+    assert.ok(prompt.includes('call save_record when one item/listing/application is'), 'record-style tasks should close records');
   });
 
   await test('context is omitted (no header) when null/empty', () => {
@@ -1840,7 +1866,7 @@ async function loopSuite() {
       assert.strictEqual(r.status, 'completed', r.error);
       assert.ok(fs.existsSync(reportPath), 'report.md exists even with no saves');
       assert.ok(fs.existsSync(htmlPath), 'report.html exists even with no saves');
-      assert.ok(fs.readFileSync(reportPath, 'utf8').includes('## Saved Evidence\n\n_(nothing saved)_'));
+      assert.ok(fs.readFileSync(reportPath, 'utf8').includes('## Saved Evidence (saved-manifest.json)\n\n_(nothing saved)_'));
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -1869,47 +1895,76 @@ async function loopSuite() {
       assert.strictEqual(r.status, 'completed', r.error);
       assert.strictEqual(report, '# Final Report\n\n- Organized Alpha finding');
       assert.ok(r.completions.some(c => c.model === 'fake-1'), 'report completion is recorded');
-      assert.ok(reqs[2].messages[0].content.includes('Evidence source: saved.md'));
+      assert.ok(reqs[2].messages[0].content.includes('Evidence source: saved-manifest.json'));
       assert.ok(reqs[2].system.includes('Think deeply about the best layout'));
-      assert.ok(reqs[2].system.includes('do not leave out saved records'));
-      assert.ok(reqs[2].system.includes('Prefer descriptive Markdown links'));
+      assert.ok(reqs[2].system.includes('Use both groups'));
+      assert.ok(reqs[2].system.includes('descriptive Markdown links'));
       assert.ok(reqs[2].messages[0].content.includes('Trusted context:\nPrefer concise user-facing reports.'));
       assert.ok(reqs[2].messages[0].content.includes('Alpha finding'));
+      assert.ok(reqs[2].messages[0].content.includes('"summary":"Alpha saved"'));
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  await test('final report synthesis uses saved-index.md when raw saves exceed budget', async () => {
-    const raw = 'RAW_DETAIL '.repeat(200).trim();
+  await test('final report synthesis always uses saved-manifest.json evidence', async () => {
+    const raw = 'RAW DETAIL '.repeat(200).trim();
     const reqs = installFakeProvider([
       [action('save_text', { args: { content: raw, summary: 'Alpha indexed finding' } })],
       [action('done', { args: { result: 'ok' } })],
-    ], ['# Summary Report\n\n- Indexed Alpha']);
+    ], ['# Manifest Report\n\n- Alpha']);
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'browser-agent-run-'));
     try {
       const r = await run({
         session: makeFakeSession([makeBrief, makeBrief]),
         task: 'summarize large search',
-        config: { ...baseConfig({ report: { enabled: true, provider: 'fake', model: 'report-model', rawTokenBudget: 10 } }), scratchpad: { enabled: true, dir } },
+        config: { ...baseConfig({ report: { enabled: true, provider: 'fake', model: 'report-model' } }), scratchpad: { enabled: true, dir } },
       });
       const report = fs.readFileSync(path.join(dir, r.id, 'report.md'), 'utf8');
       const reportPrompt = reqs[2].messages[0].content;
 
       assert.strictEqual(r.status, 'completed', r.error);
-      assert.strictEqual(report, '# Summary Report\n\n- Indexed Alpha');
-      assert.strictEqual(r.reportEvidence.source, 'saved-index.md');
-      assert.ok(fs.existsSync(path.join(dir, r.id, 'saved-index.md')), 'saved-index.md exists');
-      assert.ok(reportPrompt.includes('Evidence source: saved-index.md'));
-      assert.ok(reportPrompt.includes('Evidence mode: summary-index'));
+      assert.strictEqual(report, '# Manifest Report\n\n- Alpha');
+      assert.strictEqual(r.reportEvidence.source, 'saved-manifest.json');
+      assert.ok(fs.existsSync(path.join(dir, r.id, 'saved-manifest.json')), 'saved-manifest.json exists');
+      assert.ok(!fs.existsSync(path.join(dir, r.id, 'saved-index.md')), 'saved-index.md is not created');
+      assert.ok(reportPrompt.includes('Evidence source: saved-manifest.json'));
+      assert.ok(reportPrompt.includes('Evidence mode: manifest'));
       assert.ok(reportPrompt.includes('Alpha indexed finding'));
-      assert.ok(!reportPrompt.includes('RAW_DETAIL'), 'raw saved.md content should stay out of report prompt');
+      assert.ok(reportPrompt.includes('RAW DETAIL'), 'manifest carries saved text content');
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  await test('fallback report includes saved.md content and keeps saved.md', async () => {
+  await test('save_record groups saved evidence during a run', async () => {
+    installFakeProvider([
+      [action('save_text', { args: { content: 'Acme role detail', summary: 'Acme role saved' } })],
+      [action('save_record', { args: { metadata: '{"company":"Acme","title":"Head of Product"}', intent: 'complete Acme record' } })],
+      [action('done', { args: { result: 'ok' } })],
+    ]);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'browser-agent-run-'));
+    try {
+      const r = await run({
+        session: makeFakeSession([makeBrief, makeBrief, makeBrief]),
+        task: 'save one record',
+        config: { ...baseConfig(), scratchpad: { enabled: true, dir } },
+      });
+      const manifest = JSON.parse(fs.readFileSync(path.join(dir, r.id, 'saved-manifest.json'), 'utf8'));
+
+      assert.strictEqual(r.status, 'completed', r.error);
+      assert.deepStrictEqual(r.steps.map(s => s.action.verb), ['save_text', 'save_record', 'done']);
+      assert.strictEqual(manifest.records.length, 1);
+      assert.deepStrictEqual(manifest.records[0].metadata.company, 'Acme');
+      assert.strictEqual(manifest.records[0].metadata.save_reason, 'complete Acme record');
+      assert.strictEqual(manifest.records[0].saves[0].content, 'Acme role detail');
+      assert.deepStrictEqual(manifest.unassigned, []);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('fallback report includes saved-manifest.json content only', async () => {
     installFakeProvider([
       [action('save_text', { args: { content: 'Full captured finding', summary: 'Captured finding' } })],
       [action('done', { args: { result: 'ok' } })],
@@ -1923,13 +1978,14 @@ async function loopSuite() {
       });
       const runDir = path.join(dir, r.id);
       const reportPath = path.join(runDir, 'report.md');
-      const savedPath = path.join(runDir, 'saved.md');
+      const manifestPath = path.join(runDir, 'saved-manifest.json');
       const report = fs.readFileSync(reportPath, 'utf8');
 
       assert.strictEqual(r.status, 'completed', r.error);
-      assert.ok(report.includes('Full captured finding'), 'report includes saved.md content');
+      assert.ok(report.includes('Full captured finding'), 'report includes manifest content');
       assert.ok(report.includes('Final report synthesis disabled'), 'report records fallback reason');
-      assert.ok(fs.existsSync(savedPath), 'saved.md remains after final report is written');
+      assert.ok(fs.existsSync(manifestPath), 'saved-manifest.json remains after final report is written');
+      assert.ok(!fs.existsSync(path.join(runDir, 'saved.md')), 'saved.md is not created');
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

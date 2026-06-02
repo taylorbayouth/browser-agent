@@ -139,12 +139,10 @@ function buildHandoff(runArtifact, config = {}) {
       htmlPath: artifacts.reportHtmlPath || null,
       evidenceSource: runArtifact.reportEvidence?.source || null,
       rawTokens: runArtifact.reportEvidence?.rawTokens ?? null,
-      rawTokenBudget: runArtifact.reportEvidence?.rawTokenBudget ?? null,
     },
     artifacts: {
       runDir: artifacts.runDir || null,
-      saved: artifacts.savedPath || null,
-      savedIndex: artifacts.savedIndexPath || null,
+      savedManifest: artifacts.savedManifestPath || null,
       assetsDir: artifacts.assetsDir || null,
       log: artifacts.logPath || null,
       jsonl: artifacts.jsonlPath || null,

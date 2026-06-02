@@ -115,8 +115,7 @@ Every run gets a workspace:
 runs/<run-id>/
   report.md
   report.html
-  saved.md
-  saved-index.md
+  saved-manifest.json
   assets/
     screenshot-1.jpg
     product-sheet.pdf
@@ -124,7 +123,8 @@ runs/<run-id>/
 ```
 
 The model can keep working without stuffing all of that back into context.
-Large findings go to disk; compact summaries stay in memory.
+Text evidence and asset metadata go into the manifest; binary files go into
+`assets/`.
 
 ## Try It
 
@@ -150,8 +150,8 @@ and stars today. Return a compact markdown table."
 
 `node agent.js` writes progress to stderr and one compact JSON handoff object to
 stdout. The handoff includes the final Markdown plus absolute paths for
-`report.md`, `report.html`, `saved.md`, `saved-index.md`, assets, and logs, so
-another agent should parse stdout and use the paths instead of inferring cwd.
+`report.md`, `report.html`, `saved-manifest.json`, assets, and logs, so another
+agent should parse stdout and use the paths instead of inferring cwd.
 
 The first run performs preflight:
 

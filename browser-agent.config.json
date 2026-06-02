@@ -37,8 +37,7 @@
       "provider": "openai",
       "model": "gpt-5.5",
       "reasoningEffort": "high",
-      "timeoutMs": 60000,
-      "rawTokenBudget": 3000
+      "timeoutMs": 60000
     }
   },
 
