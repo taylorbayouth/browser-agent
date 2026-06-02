@@ -86,6 +86,8 @@ The cross-origin iframe case uses the same report-the-fact principle. A cross-or
 
 Each region gets an `@r` ref and a `lookup` entry (like `@e`/`@t`), and renders in the LLMView as an `[@rN]` line in reading order. The ref is accepted **only by `take_screenshot`** — `click`/`type`/`selectText` reject `@r` at validation. When `take_screenshot` is given any ref (`@e`/`@t`/`@r`, all optional), the executor resolves it to that node's bbox and passes a `clip` to `Page.captureScreenshot` with `captureBeyondViewport:true`, so the capture is cropped to the element's DOM rectangle — exactly, with no model-supplied coordinates, even if the element is scrolled off-screen. With no ref, it captures the full viewport as before (fully backward-compatible). An unresolvable ref degrades to a full-viewport capture rather than failing. Region *presence* (role only, not bbox) is included in `briefHash`, so a page gaining or losing a graphic re-prompts.
 
+Before the planner sees the LLMView, `visualEvidence` can crop up to eight `@r` regions in memory and ask the vision model to classify each as `{ kind: "visual" | "text" | "unknown", description, text }`. Useful visuals become `@v` lines with a compact description and their image bytes cached non-enumerably on the current brief. Readable text becomes synthetic `@t` text with `derived: "vision"` and `sourceRef`. Unknown, blank, failed, or decorative regions are removed before prompting. This pass never writes files; durable report assets are still created only by explicit save/promotion actions.
+
 The capture encoding (`config.screenshot`) is tiered on this same ref/crop distinction. The vision model downscales internally, so a lossless PNG wastes bytes, image tokens, and disk. A full-viewport *describe* (no ref) tolerates heavy JPEG compression (`quality`, default 55); a cropped *read* (ref present — usually small text, chart labels, or a CAPTCHA) is effectively OCR where artifacts eat thin glyphs, so it uses a higher `croppedQuality` (default 92). The chosen mime/ext rides back on the observation so the saved artifact matches the bytes.
 
 ### LLMView
@@ -375,6 +377,8 @@ DEFAULTS (lib/config.js)  <  browser-agent.config.json  <  env vars  <  CLI flag
 | `loop.maxSameDirectionScrolls` | `3` | Add a pivot warning after this many consecutive same-direction scrolls on one page. |
 | `settle.afterActionMs` | `150` | Pause after an action before the next snapshot. |
 | `settle.maxMs` | `2000` | Hard cap on settle. |
+| `visualEvidence.enabled` | `true` | Run the pre-brief crop+vision pass over unreadable `@r` regions. |
+| `visualEvidence.maxRegions` | `8` | Maximum unreadable regions classified per extracted brief. Overflow remains as raw `@r` fallback. |
 | `executor.backend` | `os` | `os` or `cdp` (also `BROWSER_AGENT_EXECUTOR`). |
 | `executor.pauseOnUserInput` | `true` | OS backend: pause input while the human uses the mouse/keyboard, auto-resume when idle. |
 | `executor.userIdleMs` | `600` | OS backend: how long the human must be idle before input resumes. |
@@ -451,15 +455,16 @@ It is *not* a script: the live page is always ground truth, and mid-run re-routi
 
 ```
 1. snapshot  = extract(session)            // polls while unchanged (no-change short-circuit)
-2. llmView   = reduce(snapshot)
-3. completion = plan({ system, tools, messages: [ turnMessage(task, events, llmView) ], provider, model })
-4. actions   = validate(completion.actions, snapshot.lookup, registry)
-5. for each action:
+2. snapshot  = visualEvidence(snapshot)    // in-memory @r → @v/@t/omit enrichment
+3. llmView   = reduce(snapshot)
+4. completion = plan({ system, tools, messages: [ turnMessage(task, events, llmView) ], provider, model })
+5. actions   = validate(completion.actions, snapshot.lookup, registry)
+6. for each action:
      observation = execute(action, session)   // settles internally
      steps.push({ action, observation })
      events.push(describe(action, observation))   // compact memory; see § Memory below
      if action.verb === "done" → exit "completed"
-6. goto 1
+7. goto 1
 ```
 
 ### Memory: event log, not transcript

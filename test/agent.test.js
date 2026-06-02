@@ -518,7 +518,7 @@ async function screenshotSuite() {
 
 async function visionSuite() {
   console.log('\nvision:');
-  const { normalizeVisionResult } = require('../lib/vision');
+  const { normalizeVisionResult, normalizeVisualEvidenceResult } = require('../lib/vision');
 
   await test('normalizes typed JSON into summary + description', () => {
     const out = normalizeVisionResult('{"summary":"short page summary","description":"full page description"}');
@@ -529,6 +529,116 @@ async function visionSuite() {
     const out = normalizeVisionResult('one two three four five six seven eight nine ten eleven twelve');
     assert.strictEqual(out.summary, 'one two three four five six seven eight nine ten');
     assert.strictEqual(out.description, 'one two three four five six seven eight nine ten eleven twelve');
+  });
+
+  await test('normalizes visual evidence classification JSON', () => {
+    assert.deepStrictEqual(
+      normalizeVisualEvidenceResult('{"kind":"visual","description":"A useful chart","text":""}'),
+      { kind: 'visual', description: 'A useful chart', text: '' },
+    );
+    assert.deepStrictEqual(
+      normalizeVisualEvidenceResult({ kind: 'text', description: '', text: 'Total revenue: $10M' }),
+      { kind: 'text', description: '', text: 'Total revenue: $10M' },
+    );
+    assert.deepStrictEqual(
+      normalizeVisualEvidenceResult('{"kind":"unknown","description":"white box","text":""}'),
+      { kind: 'unknown', description: 'white box', text: '' },
+    );
+    assert.deepStrictEqual(
+      normalizeVisualEvidenceResult('not json'),
+      { kind: 'unknown', description: '', text: '' },
+    );
+  });
+}
+
+async function visualEnrichmentSuite() {
+  console.log('\nvisual enrichment:');
+  const visionMod = require('../lib/vision');
+  const {
+    enrichVisualEvidence,
+    getCachedVisualImage,
+    clearVisualEvidenceCache,
+  } = require('../lib/visual_enrichment');
+
+  function sessionReturning(base64 = Buffer.from('crop').toString('base64')) {
+    const calls = [];
+    return {
+      calls,
+      client: {
+        Page: {
+          captureScreenshot: async (params) => {
+            calls.push(params);
+            return { data: base64 };
+          },
+        },
+      },
+    };
+  }
+
+  await test('turns classified regions into @v, derived @t, or omission', async () => {
+    clearVisualEvidenceCache();
+    const origClassify = visionMod.classifyVisualEvidence;
+    const base64 = Buffer.from('visual crop').toString('base64');
+    const outputs = [
+      { kind: 'visual', description: 'Photo of a black cat', text: '' },
+      { kind: 'text', description: '', text: 'Revenue grew 25%' },
+      { kind: 'unknown', description: 'blank white box', text: '' },
+    ];
+    visionMod.classifyVisualEvidence = async () => outputs.shift();
+    try {
+      const brief = makeBrief({
+        elements: [],
+        text: [{ ref: '@t1', role: 'heading', name: 'Report', bbox: [0, 0, 100, 20] }],
+        regions: [
+          { ref: '@r1', role: 'image', bbox: { x: 0, y: 40, width: 100, height: 100 }, inViewport: true },
+          { ref: '@r2', role: 'canvas', bbox: { x: 0, y: 160, width: 90, height: 100 }, inViewport: true },
+          { ref: '@r3', role: 'svg', bbox: { x: 0, y: 280, width: 80, height: 100 }, inViewport: true },
+        ],
+        lookup: { '@t1': 1, '@r1': 11, '@r2': 22, '@r3': 33 },
+      });
+      const session = sessionReturning(base64);
+      await enrichVisualEvidence({ session, brief, rawHash: 'raw', config: { enabled: true, maxRegions: 8 } });
+
+      assert.deepStrictEqual(brief.regions, [], 'all classified @r nodes are removed from the raw region list');
+      assert.strictEqual(brief.visuals.length, 1);
+      assert.strictEqual(brief.visuals[0].ref, '@v1');
+      assert.strictEqual(brief.visuals[0].description, 'Photo of a black cat');
+      assert.strictEqual(brief.visuals[0].sourceRef, '@r1');
+      assert.strictEqual(brief.text[1].ref, '@t2');
+      assert.strictEqual(brief.text[1].name, 'Revenue grew 25%');
+      assert.strictEqual(brief.text[1].derived, 'vision');
+      assert.deepStrictEqual(brief.lookup, { '@t1': 1, '@v1': 11, '@t2': 22 });
+      assert.strictEqual(session.calls.length, 3, 'one cropped capture per analyzed region');
+
+      const cached = getCachedVisualImage(brief, '@v1');
+      assert.strictEqual(cached.image, base64);
+      assert.ok(!Object.keys(brief).some(k => k.includes('VisualCache')), 'image cache is non-enumerable');
+      assert.ok(!JSON.stringify(brief).includes(base64), 'image bytes do not serialize with the brief');
+    } finally {
+      visionMod.classifyVisualEvidence = origClassify;
+      clearVisualEvidenceCache();
+    }
+  });
+
+  await test('keeps @r fallback when capture or vision fails', async () => {
+    clearVisualEvidenceCache();
+    const origClassify = visionMod.classifyVisualEvidence;
+    visionMod.classifyVisualEvidence = async () => { throw new Error('vision timeout'); };
+    try {
+      const brief = makeBrief({
+        elements: [],
+        text: [],
+        regions: [{ ref: '@r1', role: 'canvas', bbox: { x: 0, y: 0, width: 100, height: 100 }, inViewport: true }],
+        lookup: { '@r1': 11 },
+      });
+      await enrichVisualEvidence({ session: sessionReturning(), brief, rawHash: 'raw', config: { enabled: true, maxRegions: 8 } });
+      assert.strictEqual(brief.regions.length, 1);
+      assert.strictEqual(brief.regions[0].ref, '@r1');
+      assert.strictEqual(brief.lookup['@r1'], 11);
+    } finally {
+      visionMod.classifyVisualEvidence = origClassify;
+      clearVisualEvidenceCache();
+    }
   });
 }
 
@@ -3042,6 +3152,7 @@ async function postJSONSuite() {
   await reduceSuite();
   await regionSuite();
   await visionSuite();
+  await visualEnrichmentSuite();
   await screenshotSuite();
   await osGateSuite();
   await validateSuite();

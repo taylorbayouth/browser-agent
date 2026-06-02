@@ -123,6 +123,9 @@ export interface FlatStats {
   inViewport: number;
   returned: number;
   regionsReturned?: number;
+  regionsAnalyzed?: number;
+  regionsOmitted?: number;
+  visualsReturned?: number;
   elapsedMs: number;
 }
 

@@ -71,14 +71,14 @@ Browser Agent is fast because it does less.
 
 - **Rendered-page extraction**: accessibility + layout channels become a compact
   text view in hundreds of milliseconds.
-- **Tiny prompts**: the model sees refs, labels, state, and positions, not a full
-  DOM or image every turn.
+- **Tiny prompts**: the model sees refs, labels, state, and compact visual notes,
+  not a full DOM or image every turn.
 - **Prompt-cache friendly**: stable system/tool prefixes; terminal output shows
   cache percentage as the run warms.
 - **No-change polling**: if the page has not changed, it waits and rechecks
   instead of burning another LLM call.
-- **Targeted vision**: screenshots are an action, not the default perception
-  layer; cropped screenshots can target a specific `@e`, `@t`, or `@r` ref.
+- **Targeted vision**: opaque regions can be cropped and classified before the
+  planner sees them; explicit screenshot actions still target specific refs.
 
 That is why Browser Agent is designed to be one of the most token-efficient browser
 agents you can run.
@@ -255,7 +255,7 @@ Browser Agent reconstructs a compact reasoning surface from the rendered browser
 accessible controls, readable text, layout boxes, state, scroll position, and
 explicit "unreadable" regions for visual content. The model receives that small
 map plus a minimal event history. It does not receive the full DOM. It does not
-receive a screenshot unless it asks for one.
+receive full-page screenshots as its default perception layer.
 
 Actions are validated against the current snapshot before execution. Refs expire
 after navigation. Files and screenshots are persisted before their summaries go

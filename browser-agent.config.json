@@ -72,6 +72,11 @@
     "dedupeText": true
   },
 
+  "visualEvidence": {
+    "enabled": true,
+    "maxRegions": 8
+  },
+
   "executor": {
     "backend": "os",
     "binPath": null,
