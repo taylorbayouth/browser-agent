@@ -102,7 +102,7 @@ Browser Agent is not just a clicker.
 - follow popups and new tabs when the browser opens them
 - hit-test clicks and avoid obvious covered targets
 - read text without selecting the whole page
-- detect canvas/image/svg/cross-origin iframe regions the text tree cannot read
+- detect canvas/image/svg/CSS-background/cross-origin iframe regions the text tree cannot read
 - screenshot the viewport or crop exactly to a ref
 - list downloadable files without page JS
 - save real bytes from loaded resources when possible

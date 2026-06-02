@@ -363,13 +363,20 @@ async function reduceSuite() {
 }
 
 // Build a one-document DOMSnapshot from a compact node spec. Each node is
-// { tag, parent, backend, attrs?: {name:val}, bounds?: [x,y,w,h] }. Strings are
-// interned into the shared table the way captureSnapshot returns them.
+// { tag, parent, backend, attrs?: {name:val}, bounds?: [x,y,w,h], style?: {} }.
+// Strings are interned into the shared table the way captureSnapshot returns them.
+const SNAPSHOT_STYLE_PROPS = [
+  'cursor', 'display', 'visibility', 'opacity', 'pointer-events',
+  'position', 'z-index', 'background-color', 'background-image',
+  'background-repeat', 'color',
+  'font-size', 'font-weight', 'border-radius', 'overflow',
+];
+
 function makeSnapshot(nodeSpecs) {
   const strings = [];
   const intern = (s) => { let i = strings.indexOf(s); if (i < 0) { i = strings.length; strings.push(s); } return i; };
   const nodeName = [], parentIndex = [], backendNodeId = [], attributes = [];
-  const layoutNodeIndex = [], bounds = [];
+  const layoutNodeIndex = [], bounds = [], styles = [];
   const cdIndex = [];   // contentDocumentIndex.index — iframes with an embedded (same-process) doc
   nodeSpecs.forEach((n, i) => {
     nodeName.push(intern(n.tag));
@@ -378,14 +385,18 @@ function makeSnapshot(nodeSpecs) {
     const flat = [];
     for (const [k, val] of Object.entries(n.attrs || {})) { flat.push(intern(k)); flat.push(intern(String(val))); }
     attributes.push(flat);
-    if (n.bounds) { layoutNodeIndex.push(i); bounds.push(n.bounds); }
+    if (n.bounds) {
+      layoutNodeIndex.push(i);
+      bounds.push(n.bounds);
+      styles.push(SNAPSHOT_STYLE_PROPS.map(prop => prop in (n.style || {}) ? intern(String(n.style[prop])) : -1));
+    }
     if (n.contentDoc) cdIndex.push(i);
   });
   return {
     strings,
     documents: [{
       nodes: { nodeName, parentIndex, backendNodeId, attributes, contentDocumentIndex: { index: cdIndex, value: cdIndex.map(() => 0) } },
-      layout: { nodeIndex: layoutNodeIndex, bounds },
+      layout: { nodeIndex: layoutNodeIndex, bounds, styles },
     }],
   };
 }
@@ -437,6 +448,36 @@ async function regionSuite() {
     const maps = buildSnapshotMaps(snapshot);
     assert.strictEqual(collectRegions(snapshot, maps, viewport, {}).length, 1, 'off-screen still listed without the filter');
     assert.strictEqual(collectRegions(snapshot, maps, viewport, { inViewportOnly: true }).length, 0, 'inViewportOnly drops it');
+  });
+
+  await test('surfaces URL-backed CSS backgrounds and filters layout/control backgrounds', () => {
+    const snapshot = makeSnapshot([
+      { tag: 'DIV', parent: -1, backend: 400 },
+      { tag: 'DIV', parent: 0, backend: 401, bounds: [10, 10, 100, 100], style: {
+        'background-image': 'url("https://cdn.test/profile.jpg")',
+        'background-repeat': 'no-repeat',
+      } }, // ✓ profile/photo-style CSS image
+      { tag: 'DIV', parent: 0, backend: 402, bounds: [10, 130, 100, 100], style: {
+        'background-image': 'url("https://cdn.test/tile.png")',
+        'background-repeat': 'repeat',
+      } }, // ✗ true repeating background
+      { tag: 'BUTTON', parent: 0, backend: 403, bounds: [10, 250, 100, 100], style: {
+        'background-image': 'url("https://cdn.test/icon.png")',
+        'background-repeat': 'no-repeat',
+      } }, // ✗ control background/icon
+      { tag: 'DIV', parent: 0, backend: 404, bounds: [10, 370, 24, 24], style: {
+        'background-image': 'url("https://cdn.test/tiny.png")',
+        'background-repeat': 'no-repeat',
+      } }, // ✗ tiny icon-ish background
+      { tag: 'DIV', parent: 0, backend: 405, bounds: [10, 430, 100, 100], style: {
+        'background-image': 'linear-gradient(red, blue)',
+        'background-repeat': 'no-repeat',
+      } }, // ✗ no URL
+    ]);
+    const maps = buildSnapshotMaps(snapshot);
+    const regions = collectRegions(snapshot, maps, viewport, {});
+    assert.deepStrictEqual(regions.map(r => r.role), ['image']);
+    assert.strictEqual(regions[0].backendNodeId, 401);
   });
 
   await test('collectPasswordIds: finds <input type=password>, ignores other inputs/tags', () => {

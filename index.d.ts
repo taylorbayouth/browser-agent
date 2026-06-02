@@ -26,6 +26,8 @@ export interface ComputedStyle {
   position: string | null;
   'z-index': string | null;
   'background-color': string | null;
+  'background-image': string | null;
+  'background-repeat': string | null;
   color: string | null;
   'font-size': string | null;
   'font-weight': string | null;
