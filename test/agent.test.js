@@ -798,6 +798,15 @@ async function validateSuite() {
     assert.strictEqual(ok.length, 1, 'no ref is valid — full-viewport capture');
   });
 
+  await test('save_image accepts @v refs only', () => {
+    const lookup = { '@v1': 444, '@r1': 333 };
+    const accepted = validate([action('save_image', { ref: '@v1' })], lookup, registry);
+    assert.strictEqual(accepted.ok.length, 1, JSON.stringify(accepted.errors));
+    const rejected = validate([action('save_image', { ref: '@r1' })], lookup, registry);
+    assert.strictEqual(rejected.ok.length, 0);
+    assert.match(rejected.errors[0].error, /requires ref type @v/);
+  });
+
   await test('take_screenshot: a present-but-unknown ref is rejected', () => {
     const { ok, errors } = validate([action('take_screenshot', { ref: '@r9' })], { '@r1': 333 }, registry);
     assert.strictEqual(ok.length, 0);
@@ -1540,6 +1549,7 @@ async function promptSuite() {
       wait: registry.wait,
       take_screenshot: registry.take_screenshot,
       save_text: registry.save_text,
+      save_image: registry.save_image,
       save_record: registry.save_record,
       done: registry.done,
     });
@@ -1547,6 +1557,7 @@ async function promptSuite() {
     assert.ok(prompt.includes('type[@e] (intent: string, text: string, clear: boolean?, submit: boolean?)'), 'required + optional args should be shown');
     assert.ok(prompt.includes('wait (intent: string, ms: number)'), 'wait args should be shown');
     assert.ok(prompt.includes('take_screenshot[@e|@t|@r] (ref: string?, intent: string, hint: string?)'), 'optional ref types should be shown');
+    assert.ok(prompt.includes('save_image[@v] (intent: string, hint: string?)'), 'visual image promotion should be shown');
     assert.ok(prompt.includes('save_record (intent: string, metadata: string?)'), 'record grouping action should be shown');
     assert.ok(prompt.includes('done (intent: string, result: string?)'), 'optional args should be marked');
     assert.ok(prompt.includes('describing where this'), 'intent rule should be explicit');
@@ -2069,6 +2080,45 @@ async function loopSuite() {
       assert.ok(reportPrompt.includes('Alpha indexed finding'));
       assert.ok(reportPrompt.includes('RAW DETAIL'), 'manifest carries saved text content');
     } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('save_image promotes cached visual evidence into the manifest', async () => {
+    const visionMod = require('../lib/vision');
+    const origClassify = visionMod.classifyVisualEvidence;
+    const base64 = Buffer.from('cat image bytes').toString('base64');
+    visionMod.classifyVisualEvidence = async () => ({ kind: 'visual', description: 'Photo of a black cat', text: '' });
+    installFakeProvider([
+      [action('save_image', { ref: '@v1', args: { hint: 'cat photo' } })],
+      [action('done', { args: { result: 'ok' } })],
+    ]);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'browser-agent-run-'));
+    try {
+      const session = makeFakeSession([makeBrief({
+        elements: [],
+        text: [],
+        regions: [{ ref: '@r1', role: 'image', bbox: { x: 0, y: 0, width: 100, height: 100 }, inViewport: true }],
+        lookup: { '@r1': 11 },
+      })]);
+      session.client.Page = { captureScreenshot: async () => ({ data: base64 }) };
+      const r = await run({
+        session,
+        task: 'save cat image',
+        config: { ...baseConfig(), scratchpad: { enabled: true, dir } },
+      });
+      assert.strictEqual(r.status, 'completed', r.error);
+      assert.deepStrictEqual(r.steps.map(s => s.action.verb), ['save_image', 'done']);
+      const manifest = JSON.parse(fs.readFileSync(r.artifacts.savedManifestPath, 'utf8'));
+      assert.strictEqual(manifest.unassigned.length, 1);
+      assert.strictEqual(manifest.unassigned[0].kind, 'image');
+      assert.strictEqual(manifest.unassigned[0].save_reason, 'test intent');
+      assert.strictEqual(manifest.unassigned[0].metadata.description, 'Photo of a black cat');
+      assert.strictEqual(manifest.unassigned[0].metadata.ref, '@v1');
+      const savedPath = path.join(r.artifacts.assetsDir, manifest.unassigned[0].file_name);
+      assert.strictEqual(fs.readFileSync(savedPath).toString('utf8'), 'cat image bytes');
+    } finally {
+      visionMod.classifyVisualEvidence = origClassify;
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
