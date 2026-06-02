@@ -706,16 +706,13 @@ async function validateSuite() {
     assert.strictEqual(ok.length, 1, 'no ref is valid — full-viewport capture');
   });
 
-  await test('save_image accepts optional @e/@t/@r refs', () => {
-    const lookup = { '@e1': 111, '@t1': 222, '@r1': 333 };
-    for (const ref of ['@e1', '@t1', '@r1']) {
+  await test('save_image accepts optional @e/@t/@r/@v refs', () => {
+    const lookup = { '@e1': 111, '@t1': 222, '@r1': 333, '@v1': 'https://cdn.test/cat.jpg' };
+    for (const ref of ['@e1', '@t1', '@r1', '@v1']) {
       const { ok, errors } = validate([action('save_image', { ref })], lookup, registry);
       assert.strictEqual(ok.length, 1, `${ref} accepted: ${JSON.stringify(errors)}`);
     }
     assert.strictEqual(validate([action('save_image')], lookup, registry).ok.length, 1, 'no ref saves viewport');
-    const rejected = validate([action('save_image', { ref: '@v1' })], { '@v1': 444 }, registry);
-    assert.strictEqual(rejected.ok.length, 0);
-    assert.match(rejected.errors[0].error, /requires ref type/);
   });
 
   await test('take_screenshot: a present-but-unknown ref is rejected', () => {
@@ -1468,7 +1465,7 @@ async function promptSuite() {
     assert.ok(prompt.includes('type[@e] (intent: string, text: string, clear: boolean?, submit: boolean?)'), 'required + optional args should be shown');
     assert.ok(prompt.includes('wait (intent: string, ms: number)'), 'wait args should be shown');
     assert.ok(prompt.includes('take_screenshot[@e|@t|@r] (ref: string?, intent: string, hint: string?)'), 'optional ref types should be shown');
-    assert.ok(prompt.includes('save_image[@e|@t|@r] (ref: string?, intent: string, hint: string?)'), 'visual image promotion should be shown');
+    assert.ok(prompt.includes('save_image[@e|@t|@r|@v] (ref: string?, intent: string, hint: string?)'), 'visual image promotion should be shown');
     assert.ok(prompt.includes('save_record (intent: string, metadata: string?)'), 'record grouping action should be shown');
     assert.ok(prompt.includes('done (intent: string, result: string?)'), 'optional args should be marked');
     assert.ok(prompt.includes('describing where this'), 'intent rule should be explicit');
@@ -2098,6 +2095,51 @@ async function loopSuite() {
       assert.strictEqual(saved.metadata.source_url, 'https://cdn.test/profile.jpg');
       const savedPath = path.join(r.artifacts.assetsDir, saved.file_name);
       assert.strictEqual(fs.readFileSync(savedPath).toString('utf8'), 'original cat bytes');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('save_image downloads discovered @v image resources', async () => {
+    const originalBase64 = Buffer.from('visual image bytes').toString('base64');
+    installFakeProvider([
+      [action('save_image', { ref: '@v1', args: { hint: 'profile image' } })],
+      [action('done', { args: { result: 'ok' } })],
+    ]);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'browser-agent-run-'));
+    try {
+      const visual = setHiddenSourceUrl(
+        { ref: '@v1', role: 'image', url: 'https://cdn.test/profile.jpg', alt: 'Profile' },
+        'https://cdn.test/profile.jpg',
+      );
+      const session = makeFakeSession([makeBrief({
+        elements: [],
+        text: [],
+        regions: [],
+        visualImages: [visual],
+        lookup: { '@v1': 'https://cdn.test/profile.jpg' },
+      })]);
+      session.client.Page = {
+        getFrameTree: async () => ({ frameTree: { frame: { id: 'frame-1' } } }),
+        getResourceContent: async ({ frameId, url }) => {
+          assert.strictEqual(frameId, 'frame-1');
+          assert.strictEqual(url, 'https://cdn.test/profile.jpg');
+          return { content: originalBase64, base64Encoded: true };
+        },
+      };
+      const r = await run({
+        session,
+        task: 'save profile image',
+        config: { ...baseConfig(), scratchpad: { enabled: true, dir } },
+      });
+      assert.strictEqual(r.status, 'completed', r.error);
+      const manifest = JSON.parse(fs.readFileSync(r.artifacts.savedManifestPath, 'utf8'));
+      const saved = manifest.unassigned[0];
+      assert.strictEqual(saved.kind, 'image');
+      assert.strictEqual(saved.metadata.ref, '@v1');
+      assert.strictEqual(saved.metadata.source_url, 'https://cdn.test/profile.jpg');
+      const savedPath = path.join(r.artifacts.assetsDir, saved.file_name);
+      assert.strictEqual(fs.readFileSync(savedPath).toString('utf8'), 'visual image bytes');
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
