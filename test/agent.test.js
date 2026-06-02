@@ -651,6 +651,14 @@ async function validateSuite() {
     assert.strictEqual(ok.length, 6);
   });
 
+  await test('done does not require intent', () => {
+    const { ok, errors } = validate([
+      { kind: 'action', verb: 'done', args: { result: 'finished' } },
+    ], {}, registry);
+    assert.strictEqual(errors.length, 0, JSON.stringify(errors));
+    assert.strictEqual(ok.length, 1);
+  });
+
   await test('click accepts both @e and @t targets', () => {
     const lookup = { '@e1': 111, '@t1': 222 };
     const { ok, errors } = validate([
@@ -1512,6 +1520,12 @@ async function agentCliSuite() {
     assert.strictEqual(parsed.override.showReport, undefined);
   });
 
+  await test('parseArgs allows free-form values that begin with -- when they are not flags', () => {
+    const parsed = parseArgs(['--context', '--- trusted ---', 'collect profiles']);
+    assert.strictEqual(parsed.task, 'collect profiles');
+    assert.strictEqual(parsed.override.context, '--- trusted ---');
+  });
+
   await test('showReport activates a created report target', async () => {
     const calls = [];
     const session = {
@@ -1553,7 +1567,7 @@ async function promptSuite() {
     assert.ok(prompt.includes('take_screenshot[@e|@t|@r] (ref: string?, intent: string, hint: string?)'), 'optional ref types should be shown');
     assert.ok(prompt.includes('save_image[@e|@t|@r|@v] (ref: string?, intent: string, hint: string?)'), 'visual image promotion should be shown');
     assert.ok(prompt.includes('save_record (intent: string, metadata: string?)'), 'record grouping action should be shown');
-    assert.ok(prompt.includes('done (intent: string, result: string?)'), 'optional args should be marked');
+    assert.ok(prompt.includes('done (result: string?)'), 'done should not require intent');
     assert.ok(prompt.includes('describing where this'), 'intent rule should be explicit');
     assert.ok(prompt.includes('never pass punctuation, CSS selectors, words, or coordinates as ref'), 'screenshot refs should be hardened');
     assert.ok(prompt.includes('Do not save intermediate report drafts'), 'operating rules should discourage draft-saving');
@@ -2589,6 +2603,12 @@ async function planSuite() {
     assert.ok(rpWith.content.includes(plan), 'report includes the plan prose');
     const rpNo = buildReportMessage({ task: 't', status: 'completed', evidence: 'e' });
     assert.ok(!rpNo.content.includes("agent's plan of action"), 'report omits the plan block when absent');
+  });
+
+  await test('buildReportMessage marks incomplete runs as partial work', () => {
+    const msg = buildReportMessage({ task: 't', status: 'failed', evidence: 'e' });
+    assert.ok(msg.content.includes('did NOT complete successfully'), 'failed runs should be framed as incomplete');
+    assert.ok(msg.content.includes('Do not present partial work as a finished deliverable'), 'report should avoid false completion framing');
   });
 
   await test('step 0 threads the plan into the planner system prompt and the report', async () => {

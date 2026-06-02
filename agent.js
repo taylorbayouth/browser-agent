@@ -26,6 +26,7 @@ const { providers } = require('./lib/providers');
 
 const PROVIDERS = new Set(Object.keys(providers));
 const EXECUTORS = new Set(['os', 'cdp']);
+const KNOWN_OPTIONS = new Set(['--task', '-t', '--provider', '-p', '--model', '--context', '-c', '--executor', '--show-report', '--help', '-h']);
 
 function usageError(message) {
   console.error(`error: ${message}`);
@@ -42,7 +43,7 @@ function parseArgs(argv) {
 
   const value = (argv, i, flag) => {
     const raw = argv[i + 1];
-    if (raw === undefined || raw.startsWith('--')) usageError(`${flag} requires a value`);
+    if (raw === undefined || KNOWN_OPTIONS.has(raw)) usageError(`${flag} requires a value`);
     return raw;
   };
 
@@ -57,6 +58,9 @@ function parseArgs(argv) {
     else if (a === '--help' || a === '-h') { printHelp(); process.exit(0); }
     else if (a.startsWith('-')) usageError(`unknown option: ${a}`);
     else positional.push(a);
+  }
+  if (args.task && positional.length) {
+    usageError('pass the task once: --task "..." or positional words, not both');
   }
   if (!args.task && positional.length) args.task = positional.join(' ');
   args.override = override;
