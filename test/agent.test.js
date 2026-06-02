@@ -839,13 +839,16 @@ async function validateSuite() {
     assert.strictEqual(ok.length, 1, 'no ref is valid — full-viewport capture');
   });
 
-  await test('save_image accepts @v refs only', () => {
-    const lookup = { '@v1': 444, '@r1': 333 };
-    const accepted = validate([action('save_image', { ref: '@v1' })], lookup, registry);
-    assert.strictEqual(accepted.ok.length, 1, JSON.stringify(accepted.errors));
-    const rejected = validate([action('save_image', { ref: '@r1' })], lookup, registry);
+  await test('save_image accepts optional @e/@t/@r/@v refs', () => {
+    const lookup = { '@e1': 111, '@t1': 222, '@r1': 333, '@v1': 444 };
+    for (const ref of ['@e1', '@t1', '@r1', '@v1']) {
+      const { ok, errors } = validate([action('save_image', { ref })], lookup, registry);
+      assert.strictEqual(ok.length, 1, `${ref} accepted: ${JSON.stringify(errors)}`);
+    }
+    assert.strictEqual(validate([action('save_image')], lookup, registry).ok.length, 1, 'no ref saves viewport');
+    const rejected = validate([action('save_image', { ref: '@v9' })], lookup, registry);
     assert.strictEqual(rejected.ok.length, 0);
-    assert.match(rejected.errors[0].error, /requires ref type @v/);
+    assert.match(rejected.errors[0].error, /not present in current snapshot/);
   });
 
   await test('take_screenshot: a present-but-unknown ref is rejected', () => {
@@ -1598,7 +1601,7 @@ async function promptSuite() {
     assert.ok(prompt.includes('type[@e] (intent: string, text: string, clear: boolean?, submit: boolean?)'), 'required + optional args should be shown');
     assert.ok(prompt.includes('wait (intent: string, ms: number)'), 'wait args should be shown');
     assert.ok(prompt.includes('take_screenshot[@e|@t|@r] (ref: string?, intent: string, hint: string?)'), 'optional ref types should be shown');
-    assert.ok(prompt.includes('save_image[@v] (intent: string, hint: string?)'), 'visual image promotion should be shown');
+    assert.ok(prompt.includes('save_image[@e|@t|@r|@v] (ref: string?, intent: string, hint: string?)'), 'visual image promotion should be shown');
     assert.ok(prompt.includes('save_record (intent: string, metadata: string?)'), 'record grouping action should be shown');
     assert.ok(prompt.includes('done (intent: string, result: string?)'), 'optional args should be marked');
     assert.ok(prompt.includes('describing where this'), 'intent rule should be explicit');
@@ -2008,6 +2011,33 @@ async function loopSuite() {
       assert.ok(!t2.includes(full), 'full description stays out of prompt history');
     } finally {
       visionMod.describe = origDescribe;
+    }
+  });
+
+  await test('take_screenshot reads pixels without persisting report assets', async () => {
+    const visionMod = require('../lib/vision');
+    const origDescribe = visionMod.describe;
+    visionMod.describe = async () => ({ summary: 'visible page summary', description: 'visible page detail' });
+    installFakeProvider([
+      [action('take_screenshot')],
+      [action('done', { args: { result: 'ok' } })],
+    ]);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'browser-agent-run-'));
+    try {
+      const session = makeFakeSession([makeBrief, makeBrief]);
+      session.client.Page = { captureScreenshot: async () => ({ data: Buffer.from('read only').toString('base64') }) };
+      const r = await run({
+        session,
+        task: 'inspect the screen',
+        config: { ...baseConfig(), scratchpad: { enabled: true, dir } },
+      });
+      assert.strictEqual(r.status, 'completed', r.error);
+      assert.deepStrictEqual(r.steps.map(s => s.action.verb), ['take_screenshot', 'done']);
+      assert.strictEqual(r.steps[0].observation.detail.savedPath, undefined);
+      assert.ok(!fs.existsSync(r.artifacts.assetsDir), 'assets dir is not created by take_screenshot');
+    } finally {
+      visionMod.describe = origDescribe;
+      fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 

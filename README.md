@@ -106,7 +106,7 @@ Browser Agent is not just a clicker.
 - screenshot the viewport or crop exactly to a ref
 - list downloadable files without page JS
 - save real bytes from loaded resources when possible
-- save text snippets, images, screenshots, PDFs, docs, and archives to disk
+- save text snippets, promoted images, PDFs, docs, and archives to disk
 - return a complete Markdown report and browser-readable HTML copy
 
 Every run gets a workspace:
@@ -258,8 +258,8 @@ map plus a minimal event history. It does not receive the full DOM. It does not
 receive full-page screenshots as its default perception layer.
 
 Actions are validated against the current snapshot before execution. Refs expire
-after navigation. Files and screenshots are persisted before their summaries go
-back into the loop. Repeated dead actions trip a stuck guard instead of running
+after navigation. Files and promoted images are persisted before their summaries
+go back into the loop. Repeated dead actions trip a stuck guard instead of running
 forever.
 
 Full contracts live in [`DESIGN.md`](DESIGN.md).
