@@ -53,7 +53,7 @@ function parseArgs(argv) {
     else if (a === '--model') { ((override.models ??= {}).primary ??= {}).model = value(argv, i++, a); }
     else if (a === '--context' || a === '-c') override.context = value(argv, i++, a);
     else if (a === '--executor') override.executor.backend = value(argv, i++, a);
-    else if (a === '--show-report') args.showReport = value(argv, i++, a);
+    else if (a === '--show-report') args.showReport = true;
     else if (a === '--help' || a === '-h') { printHelp(); process.exit(0); }
     else if (a.startsWith('-')) usageError(`unknown option: ${a}`);
     else positional.push(a);
@@ -76,9 +76,8 @@ Options:
                                preferences). Injected at the end of the system
                                prompt. Omit for none.
   --executor <os|cdp>          Input backend. Default 'os' uses browser-input (macOS).
-  --show-report <current|tab|window>
-                               After a successful run, open report.html in the
-                               current tab, a new tab, or a new window.
+  --show-report                After a successful run, open report.html in a
+                               new browser tab.
   --help, -h                   Show this help
 
 Config file:
@@ -123,25 +122,14 @@ function validateConfig(config) {
   posInt(config.loop?.maxEmptyPlans, 'loop.maxEmptyPlans');
 }
 
-function normalizeShowReport(mode) {
-  const value = String(mode || '').trim().toLowerCase();
-  if (!value) return null;
-  if (value === 'current' || value === 'tab' || value === 'window') return value;
-  usageError(`unknown --show-report mode "${mode}" (expected: current, tab, window)`);
-}
-
-async function showReport(session, reportHtmlPath, mode) {
-  if (!session?.client || !reportHtmlPath || !mode) return;
+async function showReport(session, reportHtmlPath) {
+  if (!session?.client || !reportHtmlPath) return;
   const url = pathToFileURL(reportHtmlPath).href;
-  if (mode === 'current') {
-    await session.client.Page.enable();
-    await session.client.Page.navigate({ url });
-    return;
-  }
-  await session.client.Target.createTarget({
+  const { targetId } = await session.client.Target.createTarget({
     url,
-    newWindow: mode === 'window',
+    newWindow: false,
   });
+  if (targetId) await session.client.Target.activateTarget?.({ targetId });
 }
 
 function buildHandoff(runArtifact, config = {}) {
@@ -202,8 +190,6 @@ async function main() {
     throw err;
   }
   validateConfig(config);
-  const showReportMode = normalizeShowReport(args.showReport);
-
   // Preflight gets the environment ready (and launches Chrome). Its errors are
   // user-facing setup guidance, so print them plainly without a stack trace.
   let port = 9222;
@@ -221,8 +207,8 @@ async function main() {
   try {
     session = await connect({ port });
     const runArtifact = await run({ session, task: args.task, config });
-    if (runArtifact.status === 'completed' && runArtifact.artifacts?.reportHtmlPath) {
-      await showReport(session, runArtifact.artifacts.reportHtmlPath, showReportMode);
+    if (args.showReport && runArtifact.status === 'completed' && runArtifact.artifacts?.reportHtmlPath) {
+      await showReport(session, runArtifact.artifacts.reportHtmlPath);
     }
     process.stdout.write(JSON.stringify(buildHandoff(runArtifact, config)) + '\n');
     process.exitCode = runArtifact.status === 'completed' ? 0 : 1;
@@ -238,4 +224,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { buildHandoff, parseArgs, normalizeShowReport, showReport };
+module.exports = { buildHandoff, parseArgs, showReport };

@@ -21,7 +21,7 @@ const { estimateTokens } = require('../lib/tokens');
 const shared = require('../lib/providers/_shared');
 const { normalizeUrl, back, clickablePoint, bestQuadRect } = require('../lib/executors/page');
 const { createScratchpad, filenameStemFromHint } = require('../lib/scratchpad');
-const { buildHandoff, parseArgs, normalizeShowReport } = require('../agent');
+const { buildHandoff, parseArgs, showReport } = require('../agent');
 const { buildSystemPrompt } = require('../lib/prompt');
 const { collectRegions, collectPasswordIds, buildSnapshotMaps, hiddenSourceUrl, setHiddenSourceUrl } = require('../lib/extract');
 const { cleanWebText, decodeHtmlEntities } = require('../lib/text');
@@ -1504,19 +1504,32 @@ async function agentCliSuite() {
     assert.strictEqual(out.error, null);
   });
 
-  await test('parseArgs accepts --show-report and keeps it out of config overrides', () => {
-    const parsed = parseArgs(['--show-report', 'tab', '--provider', 'fake', 'collect profiles']);
+  await test('parseArgs accepts --show-report as a flag and keeps it out of config overrides', () => {
+    const parsed = parseArgs(['--show-report', '--provider', 'fake', 'collect profiles']);
     assert.strictEqual(parsed.task, 'collect profiles');
-    assert.strictEqual(parsed.showReport, 'tab');
+    assert.strictEqual(parsed.showReport, true);
     assert.strictEqual(parsed.override.models.primary.provider, 'fake');
     assert.strictEqual(parsed.override.showReport, undefined);
   });
 
-  await test('normalizeShowReport accepts supported modes and empty values', () => {
-    assert.strictEqual(normalizeShowReport(), null);
-    assert.strictEqual(normalizeShowReport('current'), 'current');
-    assert.strictEqual(normalizeShowReport('tab'), 'tab');
-    assert.strictEqual(normalizeShowReport('window'), 'window');
+  await test('showReport activates a created report target', async () => {
+    const calls = [];
+    const session = {
+      client: {
+        Target: {
+          createTarget: async (args) => {
+            calls.push(['createTarget', args]);
+            return { targetId: 'target-1' };
+          },
+          activateTarget: async (args) => { calls.push(['activateTarget', args]); },
+        },
+      },
+    };
+    await showReport(session, '/tmp/runs/run-1/report.html');
+    assert.deepStrictEqual(calls, [
+      ['createTarget', { url: 'file:///tmp/runs/run-1/report.html', newWindow: false }],
+      ['activateTarget', { targetId: 'target-1' }],
+    ]);
   });
 }
 
