@@ -1964,6 +1964,36 @@ async function loopSuite() {
     }
   });
 
+  await test('done is held once when record-mode leaves unassigned saves', async () => {
+    const reqs = installFakeProvider([
+      [action('save_text', { args: { content: 'First record detail', summary: 'First saved' } })],
+      [action('save_record', { args: { metadata: '{"rank":1}', intent: 'close first record' } })],
+      [action('save_text', { args: { content: 'Second record detail', summary: 'Second saved' } })],
+      [action('done', { args: { result: 'premature done', intent: 'finish early' } })],
+      [action('save_record', { args: { metadata: '{"rank":2}', intent: 'close second record' } })],
+      [action('done', { args: { result: 'ok' } })],
+    ]);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'browser-agent-run-'));
+    try {
+      const r = await run({
+        session: makeFakeSession([makeBrief, makeBrief, makeBrief, makeBrief, makeBrief, makeBrief]),
+        task: 'save two records',
+        config: { ...baseConfig(), scratchpad: { enabled: true, dir } },
+      });
+      const manifest = JSON.parse(fs.readFileSync(path.join(dir, r.id, 'saved-manifest.json'), 'utf8'));
+      const afterRejectedDone = reqs[4].messages[0].content;
+
+      assert.strictEqual(r.status, 'completed', r.error);
+      assert.deepStrictEqual(r.steps.map(s => s.action.verb), ['save_text', 'save_record', 'save_text', 'save_record', 'done']);
+      assert.match(afterRejectedDone, /unassigned saved evidence exists \(1 item\) after 1 saved record/);
+      assert.strictEqual(manifest.records.length, 2);
+      assert.strictEqual(manifest.records[1].saves[0].content, 'Second record detail');
+      assert.deepStrictEqual(manifest.unassigned, []);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   await test('fallback report includes saved-manifest.json content only', async () => {
     installFakeProvider([
       [action('save_text', { args: { content: 'Full captured finding', summary: 'Captured finding' } })],
