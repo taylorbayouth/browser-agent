@@ -46,7 +46,7 @@
   },
 
   "loop": {
-    "maxSteps": 100,
+    "maxSteps": 500,
     "shortCircuitOnNoChange": true,
     "pollMs": 1500,
     "maxNoChangePolls": 3,
