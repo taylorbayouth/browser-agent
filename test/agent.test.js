@@ -2018,9 +2018,14 @@ async function loopSuite() {
       assert.strictEqual(report, '# Final Report\n\n- Organized Alpha finding');
       assert.ok(r.completions.some(c => c.model === 'fake-1'), 'report completion is recorded');
       assert.ok(reqs[2].messages[0].content.includes('Evidence source: saved-manifest.json'));
-      assert.ok(reqs[2].system.includes('Think deeply about the best layout'));
+      assert.ok(reqs[2].system.includes('Do not keep the report artificially short'));
+      assert.ok(reqs[2].system.includes('careful synthesis'));
+      assert.ok(reqs[2].system.includes('comprehensive without padding'));
+      assert.ok(reqs[2].system.includes('Use Markdown deliberately'));
+      assert.ok(reqs[2].system.includes('tables for comparable records'));
+      assert.ok(reqs[2].system.includes('compact thumbnails'));
       assert.ok(reqs[2].system.includes('Use both groups'));
-      assert.ok(reqs[2].system.includes('descriptive Markdown links'));
+      assert.ok(reqs[2].system.includes('Use descriptive links'));
       assert.ok(reqs[2].messages[0].content.includes('Trusted context:\nPrefer concise user-facing reports.'));
       assert.ok(reqs[2].messages[0].content.includes('Alpha finding'));
       assert.ok(reqs[2].messages[0].content.includes('"summary":"Alpha saved"'));
