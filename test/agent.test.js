@@ -945,6 +945,22 @@ async function targetingSuite() {
     assert.strictEqual(pt.y, 30);
   });
 
+  await test('clickablePoint accepts the target\'s own ::after pseudo-element as the hit', async () => {
+    // Regression: some sites paint a decorative ::after pseudo-element
+    // across the whole control, so getNodeForLocation returns that pseudo at every
+    // candidate point. The pseudo lives in the target's `pseudoElements` (not
+    // `children`), so the subtree walk must descend into it — otherwise the
+    // element's own decoration reads as a foreign overlay and we throw a bogus
+    // "covered" on a link that clicks fine.
+    const trees = {
+      111: { backendNodeId: 111, children: [], pseudoElements: [{ backendNodeId: 333, pseudoType: 'after', children: [] }] },
+    };
+    const session = occlusionSession({ quads: [oneQuad], layout: layout1k, topmostAt: () => 333, trees });
+    const pt = await clickablePoint({ session, brief: makeBrief(), ref: '@e1' });
+    assert.strictEqual(pt.x, 60);   // 333 ∈ target's pseudoElements ⇒ center is accepted
+    assert.strictEqual(pt.y, 30);
+  });
+
   await test('clickablePoint skips a covered center and clicks a clear corner', async () => {
     // An overlay (222) paints over only the center; the rest of the quad is the target.
     const trees = { 111: { backendNodeId: 111, children: [] }, 222: { backendNodeId: 222, children: [] } };

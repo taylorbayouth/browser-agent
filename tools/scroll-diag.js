@@ -1,7 +1,7 @@
 'use strict';
 
 // Scroll diagnostic — RUN FROM YOUR TERMINAL (which has Accessibility perms),
-// not from inside Claude. With Chrome on port 9222 showing the LinkedIn feed:
+// not from inside Claude. With Chrome on port 9222 showing a page:
 //
 //   node scroll-diag.js
 //

@@ -136,7 +136,7 @@ test('isLeanVisible: opacity:0 (non-focusable) is hidden', () => {
 
 test('isLeanVisible: opacity:0 + focusable textbox is kept (transparent input)', () => {
   // A real input rendered transparent (its visible styling is a sibling), e.g.
-  // LinkedIn's search box — focusable and pointer-reachable, so it stays.
+  // e.g. a search box rendered with a transparent native input — focusable and pointer-reachable, so it stays.
   const style = { opacity: '0', 'pointer-events': 'auto' };
   assert.strictEqual(isLeanVisible({ x: 0, y: 0, width: 100, height: 50 }, style, true, 'textbox'), true);
 });
@@ -261,7 +261,7 @@ test('chooseTab: follows a brand-new no-opener tab once we have a baseline', () 
 
 test('chooseTab: ignores extension side panels even when they are fresh page targets', () => {
   const pages = [
-    { targetId: 'A', type: 'page', url: 'https://www.linkedin.com/jobs/', openerId: undefined },
+    { targetId: 'A', type: 'page', url: 'https://example.com/page/', openerId: undefined },
     { targetId: 'ext', type: 'page', url: 'chrome-extension://abc/sidepanel.html', openerId: undefined },
   ];
   const got = chooseTab({ pages, currentId: 'A', openerId: null, knownIds: new Set(['A']) });
@@ -270,7 +270,7 @@ test('chooseTab: ignores extension side panels even when they are fresh page tar
 
 test('chooseTab: ignores extension children opened by the current tab', () => {
   const pages = [
-    { targetId: 'A', type: 'page', url: 'https://www.linkedin.com/jobs/', openerId: undefined },
+    { targetId: 'A', type: 'page', url: 'https://example.com/page/', openerId: undefined },
     { targetId: 'ext', type: 'page', url: 'chrome-extension://abc/sidepanel.html', openerId: 'A' },
   ];
   const got = chooseTab({ pages, currentId: 'A', openerId: null, knownIds: new Set(['A']) });
@@ -279,7 +279,7 @@ test('chooseTab: ignores extension children opened by the current tab', () => {
 
 test('chooseTab: ignores chrome internals other than new-tab startup pages', () => {
   const pages = [
-    { targetId: 'A', type: 'page', url: 'https://www.linkedin.com/jobs/', openerId: undefined },
+    { targetId: 'A', type: 'page', url: 'https://example.com/page/', openerId: undefined },
     { targetId: 'settings', type: 'page', url: 'chrome://settings/', openerId: undefined },
   ];
   const got = chooseTab({ pages, currentId: 'A', openerId: null, knownIds: new Set(['A']) });

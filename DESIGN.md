@@ -658,7 +658,7 @@ Three verbs, happy path, one provider. Goal: get a real brief through a real LLM
 5. `validate.js` — regex, lookup membership, refType, args shape.
 6. `session.settle()` + `execute.js` — universal settle; dispatch three verbs via CDP.
 7. `loop.js` — orchestrator, message conversion, Run construction, max-steps guard.
-8. Smoke test: a real task against a real page (e.g., "search for X on LinkedIn").
+8. Smoke test: a real task against a real page (e.g., "search for X on any page").
 
 ### Slice 2 (after slice 1 runs end-to-end)
 
