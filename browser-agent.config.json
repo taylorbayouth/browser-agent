@@ -25,7 +25,7 @@
       "enabled": true,
       "provider": "openai",
       "model": "gpt-5.4-mini",
-      "reasoningEffort": "medium",
+      "reasoningEffort": "low",
       "timeoutMs": 30000,
       "maxReflections": 10,
       "cooldownTurns": 4,

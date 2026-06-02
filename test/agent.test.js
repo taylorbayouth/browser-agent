@@ -2024,6 +2024,7 @@ async function loopSuite() {
       assert.ok(reqs[2].system.includes('Use Markdown deliberately'));
       assert.ok(reqs[2].system.includes('tables for comparable records'));
       assert.ok(reqs[2].system.includes('compact thumbnails'));
+      assert.ok(reqs[2].system.includes('raw asset-path inventories'));
       assert.ok(reqs[2].system.includes('Use both groups'));
       assert.ok(reqs[2].system.includes('Use descriptive links'));
       assert.ok(reqs[2].messages[0].content.includes('Trusted context:\nPrefer concise user-facing reports.'));
