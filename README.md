@@ -104,7 +104,7 @@ Browser Agent is not just a clicker.
 - read text without selecting the whole page
 - detect canvas/image/svg/cross-origin iframe regions the text tree cannot read
 - screenshot the viewport or crop exactly to a ref
-- list images and downloadable files without page JS
+- list downloadable files without page JS
 - save real bytes from loaded resources when possible
 - save text snippets, images, screenshots, PDFs, docs, and archives to disk
 - return a complete Markdown report and browser-readable HTML copy

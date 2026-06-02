@@ -1425,6 +1425,11 @@ async function promptSuite() {
     assert.ok(prompt.includes('call save_record when one item/listing/application is'), 'record-style tasks should close records');
   });
 
+  await test('image discovery tool is absent from registry and prompt', () => {
+    assert.strictEqual(registry.get_images, undefined);
+    assert.ok(!buildSystemPrompt(registry).includes('get_images'));
+  });
+
   await test('context is omitted (no header) when null/empty', () => {
     const reg = { click: registry.click, done: registry.done };
     const base = buildSystemPrompt(reg);
