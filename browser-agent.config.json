@@ -3,8 +3,8 @@
     "plan": {
       "enabled": true,
       "provider": "openai",
-      "model": "gpt-5.5",
-      "reasoningEffort": "high",
+      "model": "gpt-5.4-mini",
+      "reasoningEffort": "medium",
       "timeoutMs": 30000
     },
     "primary": {
@@ -24,8 +24,8 @@
     "reflect": {
       "enabled": true,
       "provider": "openai",
-      "model": "gpt-5.5",
-      "reasoningEffort": "high",
+      "model": "gpt-5.4-mini",
+      "reasoningEffort": "medium",
       "timeoutMs": 30000,
       "maxReflections": 10,
       "cooldownTurns": 4,
@@ -35,8 +35,8 @@
     "report": {
       "enabled": true,
       "provider": "openai",
-      "model": "gpt-5.5",
-      "reasoningEffort": "high",
+      "model": "gpt-5.4-mini",
+      "reasoningEffort": "medium",
       "timeoutMs": 60000
     }
   },
