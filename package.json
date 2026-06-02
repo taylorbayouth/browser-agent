@@ -1,6 +1,6 @@
 {
   "name": "browser-agent",
-  "version": "2.0.0",
+  "version": "1.4.0",
   "description": "Extract interactive elements and text from a live Chrome tab via CDP. No JS injection. No DOM mutations.",
   "main": "index.js",
   "types": "index.d.ts",
