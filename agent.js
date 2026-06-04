@@ -13,7 +13,7 @@ const { pathToFileURL } = require('url');
 //   OPENAI_API_KEY=...    node agent.js "search for hello world"
 //   ANTHROPIC_API_KEY=... node agent.js --provider anthropic "..."
 //   GEMINI_API_KEY=...    node agent.js --provider gemini "..."
-//   node agent.js --provider ollama --model llama3.1 "..."
+//   node agent.js --provider ollama --model-id llama3.1 "..."
 //
 // Preflight launches Chrome if it isn't already running; just navigate the tab
 // to whatever page the task expects.
@@ -26,7 +26,7 @@ const { providers } = require('./lib/providers');
 
 const PROVIDERS = new Set(Object.keys(providers));
 const EXECUTORS = new Set(['os', 'cdp']);
-const KNOWN_OPTIONS = new Set(['--task', '-t', '--provider', '-p', '--model', '--context', '-c', '--executor', '--show-report', '--help', '-h']);
+const KNOWN_OPTIONS = new Set(['--task', '-t', '--provider', '-p', '--model-id', '--context', '-c', '--executor', '--show-report', '--help', '-h']);
 
 function usageError(message) {
   console.error(`error: ${message}`);
@@ -51,7 +51,7 @@ function parseArgs(argv) {
     const a = argv[i];
     if (a === '--task' || a === '-t') args.task = value(argv, i++, a);
     else if (a === '--provider' || a === '-p') { ((override.models ??= {}).primary ??= {}).provider = value(argv, i++, a); }
-    else if (a === '--model') { ((override.models ??= {}).primary ??= {}).model = value(argv, i++, a); }
+    else if (a === '--model-id') { ((override.models ??= {}).primary ??= {}).model = value(argv, i++, a); }
     else if (a === '--context' || a === '-c') override.context = value(argv, i++, a);
     else if (a === '--executor') override.executor.backend = value(argv, i++, a);
     else if (a === '--show-report') args.showReport = true;
@@ -75,7 +75,7 @@ All knobs live in browser-agent.config.json. CLI flags below override the file.
 Options:
   --task, -t <string>          The task for the agent (or pass as positional)
   --provider, -p <name>        LLM provider: ${[...PROVIDERS].join(' | ')}
-  --model <id>                 Override the provider's default model
+  --model-id <id>              Override the provider's default model
   --context, -c <string>       Trusted background for the agent (user info,
                                preferences). Injected at the end of the system
                                prompt. Omit for none.
